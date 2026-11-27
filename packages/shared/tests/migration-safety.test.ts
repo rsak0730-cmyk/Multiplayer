@@ -413,6 +413,44 @@ describe('migrations preserve the pre-existing tables', () => {
     expect(allSql, `a migration recreates ${table} instead of altering it`).not.toMatch(create);
   });
 
+  /**
+   * The ONLY constraint changes ever permitted on a pre-existing table, and why.
+   *
+   * The rule below exists to stop a migration silently destroying data in the four
+   * tables that predate OG HOST. Migration 009 needs exactly one exception:
+   * `servers.game_type` was created with CHECK ((game_type = 'bedrock')), which
+   * makes a Java engine unrepresentable — the insert is rejected outright, so
+   * Paper and Purpur could never be added even by correct application code.
+   *
+   * Widening that CHECK loses nothing: 'bedrock' stays legal, no row is rewritten,
+   * and no column changes type or name. So the exception is granted narrowly — by
+   * name, with a test asserting the replacement still accepts every value the old
+   * constraint accepted. Dropping a primary key, a foreign key, a NOT NULL or a
+   * column on these tables still fails, and so does any constraint change that is
+   * not listed here.
+   */
+  const ALLOWED_CONSTRAINT_CHANGES: ReadonlyArray<{
+    table: string;
+    constraint: string;
+    /** Quoted values the replacement must still accept, so it can only widen. */
+    mustStillAllow?: string[];
+  }> = [
+    { table: 'servers', constraint: 'servers_game_type_check', mustStillAllow: ["'bedrock'"] },
+    // New in 009. Dropped only so re-running the migration does not fail on a
+    // duplicate constraint name; it protects no pre-existing data.
+    { table: 'servers', constraint: 'servers_engine_matches_game_type' },
+  ];
+
+  /** A statement that changes one constraint and touches no column. */
+  function parseConstraintChange(statement: string) {
+    const match =
+      /^\s*alter\s+table\s+(?:if\s+exists\s+)?(?:public\.)?([a-z_0-9]+)\s+(drop|add)\s+constraint\s+(?:if\s+(?:not\s+)?exists\s+)?([a-z_0-9]+)/i.exec(
+        statement,
+      );
+    if (!match) return null;
+    return { table: match[1], action: match[2].toLowerCase(), constraint: match[3] };
+  }
+
   it('only ever adds columns to the pre-existing tables', () => {
     for (const { file, sql } of migrations) {
       for (const statement of sql.match(/alter\s+table[^;]+;/gis) ?? []) {
@@ -420,12 +458,60 @@ describe('migrations preserve the pre-existing tables', () => {
           new RegExp(`alter\\s+table\\s+(?:if\\s+exists\\s+)?(?:public\\.)?${t}\\b`, 'i').test(statement),
         );
         if (!targetsProtected) continue;
+
+        const change = parseConstraintChange(statement);
+        if (change) {
+          expect(
+            ALLOWED_CONSTRAINT_CHANGES.some((a) => a.table === change.table && a.constraint === change.constraint),
+            `${file} changes constraint ${change.constraint} on pre-existing table ${change.table}; it is not allowlisted`,
+          ).toBe(true);
+          // A constraint statement must do nothing else, so the exception cannot be
+          // used as cover for a column change.
+          expect(statement, `${file} mixes a constraint change with column DDL`).not.toMatch(
+            /add\s+column|drop\s+column|rename|alter\s+column/i,
+          );
+          continue;
+        }
+
         expect(statement, `${file} alters a protected table without "add column if not exists"`).toMatch(
           /add\s+column\s+if\s+not\s+exists/i,
         );
         expect(statement, `${file} drops or renames a column on a protected table`).not.toMatch(
           /\b(drop|rename|alter)\s+column\b/i,
         );
+      }
+    }
+  });
+
+  it('re-adds, in the same migration, every constraint it drops from a pre-existing table', () => {
+    for (const { file, sql } of migrations) {
+      const statements = sql.match(/alter\s+table[^;]+;/gis) ?? [];
+      for (const statement of statements) {
+        const change = parseConstraintChange(statement);
+        if (!change || change.action !== 'drop' || !protectedTables.includes(change.table)) continue;
+        expect(
+          statements.some((s) => new RegExp(`add\\s+constraint\\s+${change.constraint}\\b`, 'i').test(s)),
+          `${file} drops ${change.table}.${change.constraint} without re-adding it, leaving the column unconstrained`,
+        ).toBe(true);
+      }
+    }
+  });
+
+  it('never narrows a widened CHECK, so existing rows stay valid', () => {
+    for (const allowed of ALLOWED_CONSTRAINT_CHANGES) {
+      if (!allowed.mustStillAllow?.length) continue;
+      const additions = migrations
+        .flatMap((m) => m.sql.match(/alter\s+table[^;]+;/gis) ?? [])
+        .filter((s) => new RegExp(`add\\s+constraint\\s+${allowed.constraint}\\b`, 'i').test(s));
+
+      expect(additions.length, `${allowed.constraint} is dropped but never re-added`).toBeGreaterThan(0);
+      for (const statement of additions) {
+        for (const value of allowed.mustStillAllow) {
+          expect(
+            statement,
+            `${allowed.constraint} no longer accepts ${value}; rows already stored would violate it`,
+          ).toContain(value);
+        }
       }
     }
   });
