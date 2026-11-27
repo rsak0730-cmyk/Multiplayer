@@ -8,6 +8,9 @@ export default defineConfig({
     alias: {
       '@': `${here}src`,
       '@oghost/shared': `${here}../../packages/shared/src/index.ts`,
+      // The real package throws outside a Server Component build, which would
+      // make any module carrying the marker untestable. See tests/stubs.
+      'server-only': `${here}tests/stubs/server-only.ts`,
     },
   },
   test: {

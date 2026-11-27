@@ -492,6 +492,32 @@ export function voiceCodeEntropyBits(): number {
 }
 
 // ---------------------------------------------------------------------------
+// Voice session token lifetime
+// ---------------------------------------------------------------------------
+
+/**
+ * How long a minted voice token stays valid, in seconds.
+ *
+ * One hour is a deliberate trade-off. A play session runs for hours, so a very
+ * short TTL would force the companion to refresh constantly; a very long one
+ * would leave a stolen token usable long after the player left. An hour means a
+ * leaked token is bounded, and the companion refreshes it in the background
+ * without the player noticing.
+ *
+ * Revocation does not wait for expiry: disconnecting a session removes it in the
+ * database and the SFU, which is what actually stops audio. Expiry is the
+ * backstop for a token that was never used to connect.
+ */
+export const VOICE_TOKEN_TTL_SECONDS_DEFAULT = 3600;
+
+/**
+ * Device session lifetime. Longer than the token because a paired phone should
+ * stay paired across play sessions; the session token is what authorises it, and
+ * it can be revoked instantly by the player or the owner.
+ */
+export const VOICE_SESSION_TTL_DAYS = 30;
+
+// ---------------------------------------------------------------------------
 // Display helpers
 // ---------------------------------------------------------------------------
 
