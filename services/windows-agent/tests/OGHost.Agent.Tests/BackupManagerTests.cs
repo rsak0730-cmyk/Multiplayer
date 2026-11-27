@@ -212,7 +212,10 @@ public sealed class BackupManagerTests : IDisposable
         }
 
         // And nothing called escape.txt exists anywhere under the data directory.
-        Assert.DoesNotContain(
+        // Assert.Empty, not DoesNotContain: the claim is that the filtered
+        // enumeration yields no files at all. DoesNotContain is a membership test
+        // and needs the element to look for, which is not what this expresses.
+        Assert.Empty(
             Directory.EnumerateFiles(_config.Options.DataDirectory, "escape.txt", SearchOption.AllDirectories));
 
         // The legitimate entry in the same archive was still restored.
