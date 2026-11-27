@@ -203,7 +203,7 @@ the code" is never reported as "it works".
 
 | Engine | Edition | Runtime | Windows | Android |
 | --- | --- | --- | --- | --- |
-| Minecraft Bedrock Dedicated Server | Bedrock | native | implemented, never compiled | unsupported — Mojang publishes no ARM or Android build |
+| Minecraft Bedrock Dedicated Server | Bedrock | native | implemented, compiles in CI — never installed or started | unsupported — Mojang publishes no ARM or Android build |
 | PowerNukkitX | Bedrock | JVM | no adapter | unsupported — no usable JVM for server JARs |
 | PocketMine-MP | Bedrock | PHP | no adapter | unsupported — Android ships no PHP runtime |
 | Paper | Java | JVM | no adapter | unsupported |
@@ -234,10 +234,10 @@ This project is honest about the difference between *built* and *proven*.
 | --- | --- |
 | **Verified against the live database** | Migrations 001–009 applied to project `og-host`; 32 tables, all 32 RLS-enabled, 33 policies; **cross-account isolation proven by a 16/16 SQL probe** with two throwaway users (B sees none of A's servers, events or backups; writes refused; TRUNCATE refused; `security_invoker` views enforce RLS). Test data removed and the clean state re-verified. |
 | **Found by applying, not by reading** | Supabase's default ACL re-grants TRUNCATE (which bypasses RLS) to every table created after migration 005. Four voice tables inherited it before 007 closed it; a re-audit now reports **0 of 32 exposed**. Static tests passed throughout — only querying the live `pg_default_acl` revealed it. |
-| **Verified by build/test** | `next lint` 0 warnings; `tsc --noEmit` clean; **733 TypeScript tests pass**; `next build` succeeds — also re-verified from a clean extraction of the distributed ZIP. |
+| **Verified by build/test** | `next lint` 0 warnings; `tsc --noEmit` clean; **733 TypeScript tests pass**; `next build` succeeds — also re-verified from a clean extraction of the distributed ZIP. On the agent side, `dotnet build -c Release` succeeds and **129 xUnit tests pass** in CI on `windows-latest`, and both `win-x64` and `win-arm64` publish jobs produce self-contained binaries. |
 | **OG VOICE — verified** | Schema live and matching the repo file exactly (10 tables, 43 constraints, 22 indexes); the six credential tables hold no privilege for `anon`/`authenticated`; proximity gain, **dimension separation**, the ten permission states, quality classification and verification-code format covered by 97 unit tests. |
 | **OG VOICE — not verified** | No real microphone capture, no two-way audio, no measured latency, no companion app build, no live Bedrock position sync, no NAT traversal on Indian mobile carriers. Needs hardware this environment does not have. See `docs/SECURITY.md`. |
-| **Written, not yet executed** | The C# agent has never been compiled or run — there is no .NET toolchain or Windows machine here. Its xUnit suite was audited line by line against the real signatures, and CI builds it on `windows-latest`, but **CI has not been observed passing**. |
+| **Agent: compiles and unit-tests, never run end-to-end** | The C# agent now builds under `dotnet build -c Release` on `windows-latest` and its **129 xUnit tests pass**; the publish jobs produce self-contained `win-x64` and `win-arm64` binaries. It has **never run as a Windows service, never started a BDS process, and never talked to a live server** — the tests exercise its own logic against stub fixtures. Worth recording, because it corrects an earlier claim here: this suite was audited line by line against the real signatures and *still* contained 11 defects that only a compiler and a test run could find — 8 that did not compile and 3 that failed at runtime. Auditing is not execution. |
 | **Not verified** | Joining a real Bedrock client through the Playit free tier over CGNAT. This is the single most important untested claim in the project. |
 | **Not executed** | The Next.js **route-level** cross-account test (the database layer beneath it is proven; two real browsers are not); a real backup → restore and update → rollback round trip on a live server. |
 
