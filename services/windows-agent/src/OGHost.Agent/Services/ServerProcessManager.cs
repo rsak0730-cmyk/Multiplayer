@@ -11,7 +11,9 @@ namespace OGHost.Agent.Services;
 public sealed class ManagedServer
 {
     public required string ServerId { get; init; }
-    public required string WorldName { get; init; }
+    // set, not init: an owner can rename a world between starts, and StartAsync
+    // refreshes this on the already-tracked instance.
+    public required string WorldName { get; set; }
     public required string Directory { get; init; }
     public Process? Process { get; set; }
     public string Status { get; set; } = "stopped";
@@ -137,7 +139,9 @@ public sealed class ServerProcessManager
         server.Port = port;
         server.MaxPlayers = maxPlayers;
         server.WorldName = worldName;
-        server.Directory = _installer.ServerDirectory(serverId);
+        // Directory is not refreshed here: it is a pure function of the server id
+        // and GetOrAdd already set it, so reassigning it could only ever write the
+        // same value back. It stays init-only.
 
         if (server.Process is { HasExited: false })
         {
