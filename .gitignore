@@ -1,3 +1,87 @@
+# ---------------------------------------------------------------------------
+# OG HOST
+# ---------------------------------------------------------------------------
+
+# --- Secrets: never commit these, under any circumstances -------------------
+# .env.example IS committed on purpose (it holds placeholders only).
+.env
+.env.*
+!.env.example
+!.env.sample
+*.pem
+*.key
+*.pfx
+*.p12
+service-role*.json
+supabase/.temp/
+.vercel/
+
+# --- Node / npm workspaces --------------------------------------------------
+node_modules/
+.pnp
+.pnp.js
+.yarn/
+.pnpm-store/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# --- Next.js ----------------------------------------------------------------
+.next/
+out/
+next-env.d.ts
+.swc/
+
+# --- Build output -----------------------------------------------------------
+build/
+dist/
+coverage/
+*.tsbuildinfo
+.turbo/
+.cache/
+
+# --- Test / tooling caches --------------------------------------------------
+.vitest/
+.eslintcache
+.stylelintcache
+
+# --- .NET (Windows agent) ---------------------------------------------------
+bin/
+obj/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+TestResults/
+*.trx
+publish/
+
+# --- Local agent runtime data (worlds, backups, engines) --------------------
+# The agent writes these under %LocalAppData%\OGHOST, but a developer may point
+# DataDirectory into the repo while testing. Never commit player data.
+.oghost-data/
+oghost-local/
+
+# --- Editors / OS -----------------------------------------------------------
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json.example
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---------------------------------------------------------------------------
+# Legacy SyncBeat Android project (pre-existing content in this repository)
+# ---------------------------------------------------------------------------
+
 # Compiled class file
 *.class
 

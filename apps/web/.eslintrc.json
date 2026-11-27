@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json.schemastore.org/eslintrc",
+  "extends": ["next/core-web-vitals"],
+  "ignorePatterns": [
+    "node_modules/",
+    ".next/",
+    "out/",
+    "build/",
+    "coverage/",
+    "next-env.d.ts",
+    "vitest.config.ts"
+  ],
+  "rules": {
+    "react/no-unescaped-entities": "warn",
+    "@next/next/no-img-element": "warn"
+  }
+}

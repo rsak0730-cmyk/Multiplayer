@@ -1,8 +1,14 @@
-name: Build Android APK
+# NOTE: This workflow predates the OG HOST project. It built an unrelated
+# Android app ("SyncSound") whose Gradle sources are not in this repository
+# (only `syncbeat (1).zip` is), so it can never succeed as written.
+#
+# It is kept for history but restricted to manual dispatch only, so it no
+# longer fails on every push to main. Delete it once you are sure you do not
+# need it. The OG HOST workflows are `web.yml` and `windows-agent.yml`.
+
+name: "LEGACY — SyncBeat Android APK (unrelated, manual only)"
 
 on:
-  push:
-    branches: [ "main" ]
   workflow_dispatch:
 
 jobs:
