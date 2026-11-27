@@ -80,7 +80,12 @@ public sealed class RakNetVerifier
             for (var attempt = 0; attempt < 3; attempt++)
             {
                 ct.ThrowIfCancellationRequested();
-                await udp.SendAsync(ping, ping.Length, endpoint, ct);
+                // ReadOnlyMemory overload, chosen explicitly. UdpClient has no
+                // (byte[], int, IPEndPoint, CancellationToken) form: the only
+                // four-argument overload is (byte[], int, string hostname, int port),
+                // so passing an endpoint and a token bound to that one and failed to
+                // convert both arguments.
+                await udp.SendAsync(ping.AsMemory(0, ping.Length), endpoint, ct);
 
                 using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 timeoutCts.CancelAfter(timeoutMs);

@@ -129,7 +129,7 @@ public sealed class AddonInstaller
 
         var folderName = SafeFolderName(manifest);
         var serverDir = _installer.ServerDirectory(serverId);
-        var packRoot = Path.Combine(serverDir, packKind.Value.Directory, folderName);
+        var packRoot = Path.Combine(serverDir, packKind.Directory, folderName);
 
         if (Directory.Exists(packRoot)) Directory.Delete(packRoot, recursive: true);
         Directory.CreateDirectory(packRoot);
@@ -151,9 +151,9 @@ public sealed class AddonInstaller
             entry.ExtractToFile(target, overwrite: true);
         }
 
-        RegisterPack(serverId, packKind.Value, manifest, folderName);
+        RegisterPack(serverId, packKind, manifest, folderName);
 
-        _logger.LogInformation("Installed {Kind} pack {Folder} for {ServerId}", packKind.Value.Directory, folderName, serverId);
+        _logger.LogInformation("Installed {Kind} pack {Folder} for {ServerId}", packKind.Directory, folderName, serverId);
         return new AddonResult(true, packRoot, null, manifest.Header.Uuid);
     }
 

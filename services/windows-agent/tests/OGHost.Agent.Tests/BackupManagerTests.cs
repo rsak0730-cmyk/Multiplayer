@@ -65,7 +65,17 @@ public sealed class BackupManagerTests : IDisposable
     [Fact]
     public async Task Backup_metadata_records_the_bedrock_version_and_timestamp()
     {
-        _installer.WriteState(_serverId, new ServerState("1.21.20", World, null, DateTime.UtcNow));
+        const string version = "1.21.20";
+
+        // Writing state is not enough: GetInstalledVersion only reports a version
+        // whose engine binary actually exists on disk, and it is right to refuse a
+        // state file pointing at a missing engine (InstallerLayoutTests covers that
+        // guard). So the fixture installs a stub engine as well, and the assertion
+        // below checks the same variable rather than repeating the literal.
+        var engine = _installer.EngineDirectory(version);
+        Directory.CreateDirectory(engine);
+        File.WriteAllText(Path.Combine(engine, "bedrock_server.exe"), "stub");
+        _installer.WriteState(_serverId, new ServerState(version, World, engine, DateTime.UtcNow));
 
         var result = await _backups.CreateAsync(_serverId, World, "meta", safeStopIfRunning: false, CancellationToken.None);
         Assert.True(result.Success, result.Error);
@@ -76,7 +86,7 @@ public sealed class BackupManagerTests : IDisposable
         using var reader = new StreamReader(entry!.Open());
         var json = await reader.ReadToEndAsync();
 
-        Assert.Contains("1.21.20", json);
+        Assert.Contains(version, json);
         Assert.Contains(World, json);
         Assert.Contains("created_at", json);
     }
@@ -189,12 +199,20 @@ public sealed class BackupManagerTests : IDisposable
         Directory.CreateDirectory(Path.GetDirectoryName(hostile)!);
         using (var archive = ZipFile.Open(hostile, ZipArchiveMode.Create))
         {
-            var entry = archive.CreateEntry($"worlds/{World}/../../../../escape.txt");
-            using var writer = new StreamWriter(entry.Open());
-            await writer.WriteAsync("pwned");
-            var good = archive.CreateEntry($"worlds/{World}/level.dat");
-            using var gw = new StreamWriter(good.Open());
-            await gw.WriteAsync("safe-world");
+            // ZipArchive cannot create an entry while a previously opened entry
+            // stream is still open, so each writer has to be disposed before the
+            // next CreateEntry. `using var` would hold both open until the end of
+            // the enclosing block and the second CreateEntry would throw.
+            using (var writer = new StreamWriter(
+                       archive.CreateEntry($"worlds/{World}/../../../../escape.txt").Open()))
+            {
+                await writer.WriteAsync("pwned");
+            }
+
+            using (var writer = new StreamWriter(archive.CreateEntry($"worlds/{World}/level.dat").Open()))
+            {
+                await writer.WriteAsync("safe-world");
+            }
         }
 
         var result = await _backups.RestoreAsync(_serverId, World, "hostile.zip", CancellationToken.None);
@@ -206,13 +224,20 @@ public sealed class BackupManagerTests : IDisposable
         var worldDir = _installer.WorldDirectory(World);
         for (var up = 1; up <= 5; up++)
         {
-            var ancestor = Path.GetFullPath(worldDir, string.Join('/', Enumerable.Repeat("..", up)));
+            // Path.GetFullPath(path, basePath): the relative part comes first.
+            // Passing the world directory as `path` and "../.." as `basePath`
+            // throws "Basepath argument is not fully qualified", because basePath is
+            // the one that has to be absolute.
+            var ancestor = Path.GetFullPath(string.Join('/', Enumerable.Repeat("..", up)), worldDir);
             Assert.False(File.Exists(Path.Combine(ancestor, "escape.txt")),
                 $"Traversal entry escaped {up} level(s) up to {ancestor}");
         }
 
         // And nothing called escape.txt exists anywhere under the data directory.
-        Assert.DoesNotContain(
+        // Assert.Empty, not DoesNotContain: the claim is that the filtered
+        // enumeration yields no files at all. DoesNotContain is a membership test
+        // and needs the element to look for, which is not what this expresses.
+        Assert.Empty(
             Directory.EnumerateFiles(_config.Options.DataDirectory, "escape.txt", SearchOption.AllDirectories));
 
         // The legitimate entry in the same archive was still restored.
