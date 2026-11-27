@@ -22,6 +22,7 @@ export default async function NewServerPage() {
     id: n.id,
     name: n.name,
     operating_system: n.operating_system,
+    agent_platform: n.agent_platform,
     revoked: Boolean(n.revoked_at),
     online: Boolean(
       !n.revoked_at && n.last_seen_at && now - new Date(n.last_seen_at).getTime() < 90_000,

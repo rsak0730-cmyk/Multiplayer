@@ -12,11 +12,14 @@ import {
   Wand2,
 } from 'lucide-react';
 import { Badge } from '@/components/ui/Badge';
+import { EnginePicker, firstEngineForNode } from '@/components/servers/EnginePicker';
+import { engineById } from '@oghost/shared';
 
 interface NodeOption {
   id: string;
   name: string;
   operating_system: string | null;
+  agent_platform: string | null;
   revoked: boolean;
   online: boolean;
   ram_available_mb: number | null;
@@ -72,7 +75,10 @@ export function NewServerForm({
     world_name: 'world',
     description: '',
     max_players: 10,
-    port: 19132,
+    // null means "use the engine's standard port". Bedrock is 19132/udp, Java is
+    // 25565/tcp, so the default has to follow the engine rather than be fixed here.
+    port: null as number | null,
+    engine_id: 'bds',
     gamemode: 'survival',
     difficulty: 'easy',
     enable_cheats: true,
@@ -85,15 +91,35 @@ export function NewServerForm({
   const [errorText, setErrorText] = useState<string | null>(null);
 
   const selectedNode = usableNodes.find((n) => n.id === form.node_id);
+  const selectedEngine = engineById(form.engine_id) ?? null;
 
   function update<K extends keyof typeof form>(key: K, value: (typeof form)[K]) {
     setForm((prev) => ({ ...prev, [key]: value }));
+  }
+
+  /**
+   * Choosing a different device can change which engines are possible, so the
+   * engine is re-derived instead of being carried over. Keeping the previous
+   * engine would leave a selection the new device cannot run.
+   */
+  function selectNode(nodeId: string) {
+    const next = usableNodes.find((n) => n.id === nodeId);
+    setForm((prev) => ({
+      ...prev,
+      node_id: nodeId,
+      engine_id: firstEngineForNode(next ?? null) ?? '',
+      port: null,
+    }));
   }
 
   async function onSubmit(event: React.FormEvent) {
     event.preventDefault();
     if (!form.node_id) {
       setErrorText('Choose which of your devices will host this server.');
+      return;
+    }
+    if (!form.engine_id) {
+      setErrorText('No engine can run on the device you chose. Pick another device, or read why each engine is unavailable.');
       return;
     }
     setBusy(true);
@@ -104,6 +130,8 @@ export function NewServerForm({
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           ...form,
+          // Omitted rather than sent as null so the API derives it from the engine.
+          port: form.port ?? undefined,
           minecraft_version: latestVersion?.version ?? undefined,
         }),
       });
@@ -238,7 +266,7 @@ export function NewServerForm({
                 <button
                   key={node.id}
                   type="button"
-                  onClick={() => update('node_id', node.id)}
+                  onClick={() => selectNode(node.id)}
                   className={`rounded-xl border p-3.5 text-left transition-all duration-200 ${
                     active
                       ? 'border-violet-400/50 bg-violet-500/12 shadow-[0_0_28px_-14px_rgba(139,92,246,1)]'
@@ -283,6 +311,13 @@ export function NewServerForm({
             })}
           </div>
         </section>
+
+        <EnginePicker
+          node={selectedNode ?? null}
+          nodeName={selectedNode?.name}
+          value={form.engine_id}
+          onChange={(engineId) => setForm((prev) => ({ ...prev, engine_id: engineId, port: null }))}
+        />
 
         {/* Gameplay */}
         <section className="glass p-5">
@@ -354,12 +389,14 @@ export function NewServerForm({
                 min={1024}
                 max={65535}
                 className="input"
-                value={form.port}
-                onChange={(e) => update('port', Number(e.target.value))}
+                value={form.port ?? ''}
+                placeholder={selectedEngine ? String(selectedEngine.defaultPort) : '19132'}
+                onChange={(e) => update('port', e.target.value === '' ? null : Number(e.target.value))}
               />
               <p className="mt-1.5 text-[11px] text-white/35">
-                Bedrock uses UDP. 19132 is the standard port; change it only if another server on the
-                same device already uses it.
+                {selectedEngine
+                  ? `${selectedEngine.displayName} uses ${selectedEngine.defaultPortProtocol.toUpperCase()} on port ${selectedEngine.defaultPort}. Leave this empty to use that; change it only if another server on the same device already uses it.`
+                  : 'Leave this empty to use the standard port for the selected engine.'}
               </p>
             </div>
           </div>
