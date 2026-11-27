@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import {
   ENGINES,
   ENGINE_IDS,
+  ENGINE_ID_VALUES,
   HOST_OSES,
   NODE_SCORE_WEIGHTS,
   canInstallPackage,
@@ -52,6 +53,16 @@ describe('catalog shape', () => {
   it('gives every engine a unique id and display name', () => {
     expect(new Set(ENGINES.map((e) => e.id)).size).toBe(ENGINES.length);
     expect(new Set(ENGINES.map((e) => e.displayName)).size).toBe(ENGINES.length);
+  });
+
+  it('derives the EngineId type from the same tuple validators use', () => {
+    // One declaration for both, so a runtime list (zod enum, SQL mirror, UI
+    // dropdown) cannot drift from the compile-time union.
+    expect([...ENGINE_ID_VALUES].sort()).toEqual([...ENGINE_IDS].sort());
+    expect(ENGINE_ID_VALUES).toHaveLength(ENGINES.length);
+    for (const engine of ENGINES) {
+      expect(ENGINE_ID_VALUES, engine.id).toContain(engine.id);
+    }
   });
 
   it('looks engines up by id and rejects unknown ones', () => {

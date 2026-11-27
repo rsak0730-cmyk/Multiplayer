@@ -42,7 +42,15 @@
 
 export type ServerEdition = 'bedrock' | 'java';
 
-export type EngineId = 'bds' | 'powernukkitx' | 'pocketmine-mp' | 'paper' | 'purpur';
+/**
+ * Declared as a const tuple FIRST and the type derived from it, so the runtime
+ * list used by validators (zod, SQL mirrors, UI dropdowns) and the compile-time
+ * union cannot drift apart. Adding an engine is then one edit, not two that have
+ * to be kept in step by hand.
+ */
+export const ENGINE_ID_VALUES = ['bds', 'powernukkitx', 'pocketmine-mp', 'paper', 'purpur'] as const;
+
+export type EngineId = (typeof ENGINE_ID_VALUES)[number];
 
 /** Operating systems a hosting node may report. */
 export type HostOs = 'windows' | 'linux' | 'android' | 'macos';

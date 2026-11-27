@@ -3,17 +3,23 @@ import { createAdminClient } from '@/lib/supabase/admin';
 import { sha256Hex, generateNodeToken } from '@/lib/auth';
 import { checkRateLimit, rateLimitResponse } from '@/lib/rate-limit';
 import { isValidPairingCode } from '@oghost/shared';
+import { defaultNodeIdentity, resolveAgentPlatform } from '@/lib/nodes/registration';
 import { auditLog, clientIp } from '@/lib/audit';
 
 export const runtime = 'nodejs';
 
 /**
  * POST /api/agent/pairing/claim
- * The Windows agent exchanges a short-lived pairing code (shown in the
- * web UI) for a long-lived node token. Only the hash of the code is
- * stored in the database.
+ * An agent exchanges a short-lived pairing code (shown in the web UI) for a
+ * long-lived node token. Only the hash of the code is stored in the database.
  *
- * Body: { code: "XXXXXX-XXXXXX", hostname, operating_system, agent_version }
+ * Any OG HOST agent may claim — the Windows service today, an Android agent when
+ * one exists. The platform it registers as is recorded here and is what engine
+ * compatibility is later decided from, so an unrecognised explicit claim is
+ * refused instead of being rewritten to the default.
+ *
+ * Body: { code: "XXXXXX-XXXXXX", hostname, operating_system, agent_version,
+ *         agent_platform }
  */
 export async function POST(request: Request) {
   if (!checkRateLimit(`pairing:${clientIp(request) ?? 'unknown'}`)) {
@@ -25,6 +31,7 @@ export async function POST(request: Request) {
     hostname?: string;
     operating_system?: string;
     agent_version?: string;
+    agent_platform?: string;
   };
   try {
     body = await request.json();
@@ -62,10 +69,21 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'Too many attempts. Generate a new code.' }, { status: 429 });
   }
 
+  // Decide the platform before anything is written: it is stored on the node and
+  // trusted later when an engine is chosen for it.
+  const platform = resolveAgentPlatform({
+    reported: body.agent_platform,
+    operatingSystem: body.operating_system,
+  });
+  if (!platform.ok) {
+    return NextResponse.json({ error: platform.error }, { status: 400 });
+  }
+  const identity = defaultNodeIdentity(platform.platform);
+
   // Issue the node token (plaintext returned ONCE).
   const token = generateNodeToken();
   const tokenHash = sha256Hex(token);
-  const nodeName = body.hostname?.trim() || 'Windows Node';
+  const nodeName = body.hostname?.trim() || identity.name;
 
   const { data: node, error: nodeError } = await admin
     .from('nodes')
@@ -73,9 +91,9 @@ export async function POST(request: Request) {
       owner_id: pairing.owner_id,
       name: nodeName,
       hostname: body.hostname ?? null,
-      operating_system: body.operating_system ?? 'Windows',
+      operating_system: body.operating_system?.trim() || identity.operatingSystem,
       agent_version: body.agent_version ?? null,
-      agent_platform: 'windows',
+      agent_platform: platform.platform,
       status: 'online',
       token_hash: tokenHash,
       token_created_at: new Date().toISOString(),

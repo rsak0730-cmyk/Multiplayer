@@ -4,7 +4,8 @@ import { createAdminClient } from '@/lib/supabase/admin';
 import { requireUser } from '@/lib/auth';
 import { checkRateLimit, rateLimitResponse } from '@/lib/rate-limit';
 import { auditLog, clientIp } from '@/lib/audit';
-import { isValidServerName, isValidWorldName, NODE_COMMANDS } from '@oghost/shared';
+import { ENGINE_ID_VALUES, isValidServerName, isValidWorldName } from '@oghost/shared';
+import { engineInstallCommand, resolveEngineForNode } from '@/lib/servers/engine-selection';
 import { z } from 'zod';
 
 export const runtime = 'nodejs';
@@ -15,7 +16,11 @@ const createSchema = z.object({
   world_name: z.string().trim().min(1).max(64).default('world'),
   description: z.string().trim().max(255).default(''),
   max_players: z.number().int().min(1).max(100).default(10),
-  port: z.number().int().min(1024).max(65535).default(19132),
+  // Optional so the port can follow the engine: Bedrock defaults to 19132/udp and
+  // Java to 25565/tcp. Hardcoding 19132 here would hand a Java server the wrong
+  // port and the wrong protocol.
+  port: z.number().int().min(1024).max(65535).optional(),
+  engine_id: z.enum(ENGINE_ID_VALUES).default('bds'),
   gamemode: z.enum(['survival', 'creative', 'adventure']).default('survival'),
   difficulty: z.enum(['peaceful', 'easy', 'normal', 'hard']).default('easy'),
   enable_cheats: z.boolean().default(true),
@@ -119,6 +124,39 @@ export async function POST(request: Request) {
     );
   }
 
+  // Engine and platform compatibility are decided from the catalog, never from
+  // what the client asserts about the device. game_type is derived here, so it
+  // cannot contradict engine_id.
+  const selection = resolveEngineForNode({ engineId: input.engine_id, node });
+  if (!selection.ok) {
+    return NextResponse.json(
+      {
+        error: selection.error,
+        reason: selection.reason,
+        detail: selection.detail,
+        requires_verification: selection.requiresVerification,
+      },
+      { status: selection.status },
+    );
+  }
+
+  // Refuse before creating any row. Queueing an install command no adapter can
+  // fulfil would leave a server that can never start and an error the owner
+  // cannot act on.
+  const installCommand = engineInstallCommand(selection.engine.id);
+  if (!installCommand) {
+    return NextResponse.json(
+      {
+        error: `${selection.engine.displayName} has no install adapter in the agent yet, so a server cannot be created for it.`,
+        reason: 'no_engine_adapter',
+        detail: 'Only official Bedrock Dedicated Server can be installed today.',
+      },
+      { status: 400 },
+    );
+  }
+
+  const port = input.port ?? selection.defaultPort;
+
   const { data: server, error: serverError } = await admin
     .from('servers')
     .insert({
@@ -126,12 +164,14 @@ export async function POST(request: Request) {
       node_id: node.id,
       name: input.name,
       description: input.description,
-      game_type: 'bedrock',
+      engine_id: selection.engine.id,
+      game_type: selection.gameType,
+      runtime_kind: selection.engine.runtime.kind,
       world_name: input.world_name,
       minecraft_version: input.minecraft_version ?? null,
       status: 'stopped',
       max_players: input.max_players,
-      port: input.port,
+      port,
       network_provider: input.network_provider,
       auto_update: input.auto_update,
       auto_start_on_node_boot: input.auto_start_on_node_boot,
@@ -145,7 +185,9 @@ export async function POST(request: Request) {
     );
   }
 
-  // Create the matching BDS server.properties config row.
+  // Create the matching BDS server.properties config row. This block is
+  // BDS-specific (scripting, command blocks, the IPv6 companion port); other
+  // engines are refused above until they have their own config writer.
   const { error: cfgError } = await admin.from('server_configs').insert({
     server_id: server.id,
     owner_id: user!.id,
@@ -154,8 +196,8 @@ export async function POST(request: Request) {
     difficulty: input.difficulty,
     pvp: input.pvp,
     max_players: input.max_players,
-    server_port: input.port,
-    server_portv6: input.port + 1,
+    server_port: port,
+    server_portv6: port + 1,
     level_name: input.world_name,
     // enable_cheats maps to BDS: scripting + command blocks + operator default
     enable_scripting: input.enable_cheats,
@@ -169,12 +211,12 @@ export async function POST(request: Request) {
     );
   }
 
-  // Ask the node to install BDS for this server. If the node is offline the
+  // Ask the node to install the engine for this server. If the node is offline the
   // command stays pending and runs when it reconnects.
   await admin.from('node_commands').insert({
     node_id: node.id,
     server_id: server.id,
-    command_type: NODE_COMMANDS.INSTALL_BDS,
+    command_type: installCommand,
     payload: {
       world_name: input.world_name,
       minecraft_version: input.minecraft_version ?? null,
@@ -196,9 +238,23 @@ export async function POST(request: Request) {
     action: 'server.created',
     targetType: 'server',
     targetId: server.id,
-    details: { node_id: node.id, name: input.name },
+    details: { node_id: node.id, name: input.name, engine_id: selection.engine.id },
     ipAddress: clientIp(request),
   });
 
-  return NextResponse.json({ server }, { status: 201 });
+  // caveats are returned so the UI can show the engine's limitations at the moment
+  // of creation rather than only on a details page (§25).
+  return NextResponse.json(
+    {
+      server,
+      engine: {
+        id: selection.engine.id,
+        display_name: selection.engine.displayName,
+        edition: selection.gameType,
+        official: selection.engine.official,
+        caveats: selection.caveats,
+      },
+    },
+    { status: 201 },
+  );
 }
