@@ -351,6 +351,26 @@ describe('voice tables keep credentials out of browser reach', () => {
     expect(voiceMigration).toMatch(/relay_mode\s+text\s+not\s+null\s+default\s+'unknown'/i);
     expect(voiceMigration).toMatch(/turn_servers_configured\s+boolean\s+not\s+null\s+default\s+false/i);
   });
+
+  it('keeps player positions out of browser reach too', () => {
+    // Added in 008, after the credential tables, so it is not covered by the
+    // loop above. Positions describe where guests are standing, which is why an
+    // owner reads the derived player list rather than raw coordinates.
+    const positions = migrations.find((m) => m.file.startsWith('008'))?.sql ?? '';
+    expect(positions).toMatch(/create\s+table\s+if\s+not\s+exists\s+public\.voice_positions\b/i);
+    expect(positions).toMatch(/alter\s+table\s+public\.voice_positions\s+enable\s+row\s+level\s+security/i);
+    expect(positions).not.toMatch(/create\s+policy[^;]*\bon\s+public\.voice_positions\b/i);
+    expect(positions).toMatch(/revoke\s+all\s+on\s+table\s+public\.voice_positions\s+from\s+anon,\s*authenticated/i);
+  });
+
+  it('restricts who may claim to have reported a position', () => {
+    // The whole authority of proximity voice rests on coordinates coming from
+    // inside the server process. A 'client' value here would mean a companion app
+    // could place itself next to any player.
+    const positions = migrations.find((m) => m.file.startsWith('008'))?.sql ?? '';
+    expect(positions).toMatch(/reported_by\s+text\s+not\s+null\s+default\s+'add_on'\s+check\s*\(reported_by\s+in\s*\('add_on',\s*'agent'\)\)/i);
+    expect(positions).not.toMatch(/'client'|'companion'|'player'/i);
+  });
 });
 
 describe('views cannot be used to bypass row level security', () => {
