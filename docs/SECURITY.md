@@ -286,7 +286,7 @@ app currently runs a `next` version with published critical DoS advisories.**
 ### The path forward
 
 1. `.github/dependabot.yml` opens weekly PRs for npm, NuGet and GitHub Actions.
-   CI runs the full gate (lint, typecheck, 237 unit tests, production build, SQL
+   CI runs the full gate (lint, typecheck, 253 unit tests, production build, SQL
    migration validation, and the Windows agent xUnit suite) on each one.
 2. Do **not** merge a major bump on a green build alone. For `next`, read the
    15 and 16 codemods and run `npx @next/codemod upgrade latest`.
@@ -329,19 +329,57 @@ app currently runs a `next` version with published critical DoS advisories.**
 
 ## Verification status
 
-| Control | Verified how |
-| --- | --- |
-| Command allowlist (reject shell, accept Bedrock commands) | xUnit tests, `CommandAllowlistTests` — 30+ cases |
-| Path confinement and traversal rejection | xUnit tests, `PathConfinementTests` |
-| Protected system files | xUnit tests, same file |
-| CGNAT / private-range detection | xUnit tests, `CgnatDetectionTests` |
-| Zip-slip resistance in restore | xUnit tests, `BackupManagerTests` |
-| Version comparison and page parsing | xUnit tests |
-| Shared validation helpers | vitest, `packages/shared` |
-| RLS policies | **Requires a live Supabase project — not yet executed.** See `docs/INSTALLATION.md` §Verify RLS. |
-| Cross-account access attempts | **Requires two live accounts — not yet executed.** |
-| Real BDS process behaviour | **Requires Windows hardware — not yet executed.** |
+Read the "Verified how" column carefully. **Written is not the same as run.**
+The xUnit rows below describe tests that exist and were audited line by line
+against the real C# signatures, but they have **never been executed** — there is
+no .NET toolchain in the environment where this code was written. They run in CI
+on `windows-latest`; that pipeline has not yet been observed passing.
 
-The untested rows are the ones that matter most before opening registration to
-strangers. They are listed in `docs/INSTALLATION.md` as a pre-launch checklist
-rather than assumed to pass.
+| Control | Verified how | Actually executed? |
+| --- | --- | --- |
+| Row Level Security owner isolation | Live SQL probe against project `og-host` — two throwaway users, real rows, `set role authenticated` + `request.jwt.claims`, 16 checks | **YES — 16/16 passed** |
+| Cross-account read attempts | Same probe: B sees 0 of A's servers, node_events and backups | **YES** |
+| Cross-account write attempts | Same probe: INSERT/UPDATE/DELETE refused with `permission denied` | **YES** |
+| TRUNCATE (an RLS-bypassing operation) refused to untrusted roles | Same probe, check 11 | **YES** |
+| Views enforce RLS rather than bypassing it | Same probe: `node_status_view` → 1 row for B, `server_overview_view` → 0 | **YES** |
+| Role privileges are minimal (`authenticated` read-only, `anon` catalogue only) | `has_table_privilege` over 11 tables | **YES** |
+| Schema state: 19 tables, all RLS-enabled, 27 policies | `pg_class` / `pg_policies` query | **YES** |
+| Additive, idempotent migrations preserve the original four tables | Applied 001–005 to the live project; all four preserved and were empty | **YES** |
+| Web/shared validation, allowlist mirror, CGNAT mirror, version discovery | vitest — 253 tests | **YES — all pass** |
+| Lint, typecheck, production build | `next lint` (0 warnings), `tsc --noEmit`, `next build` | **YES** |
+| Command allowlist rejects shell and accepts Bedrock commands | xUnit `CommandAllowlistTests` | **NO — written, never run** |
+| Path confinement and traversal rejection | xUnit `PathConfinementTests` | **NO — written, never run** |
+| Protected Bedrock system files | xUnit, same file | **NO — written, never run** |
+| CGNAT / private-range detection (agent side) | xUnit `CgnatDetectionTests` | **NO — written, never run** |
+| Zip-slip resistance in backup restore | xUnit `BackupManagerTests` | **NO — written, never run** |
+| Version comparison and download-page parsing | xUnit | **NO — written, never run** |
+| Real BDS process behaviour | Needs Windows + official BDS | **NO** |
+| Real Bedrock client joining a hosted server | Needs Windows + BDS + a client on mobile data | **NO** |
+| Backup → restore round trip on a live server | Needs Windows + BDS | **NO** |
+| Update → rollback round trip on a live server | Needs Windows + BDS | **NO** |
+| Playit UDP tunnel with a current Bedrock client | Needs a Playit account + binary + Windows | **NO** |
+
+### What the RLS probe changed
+
+Before this audit, RLS and cross-account access were recorded as unexecuted. They
+are now genuinely verified — and verifying them surfaced two defects that
+inspection alone had missed:
+
+1. **`anon`, `authenticated` and `service_role` had no SELECT or DML privileges
+   at all**, only TRUNCATE/REFERENCES/TRIGGER. The policies were correct but
+   unreachable, and the application could not have functioned: every dashboard
+   read and every API write would have failed with `permission denied`. Fixed in
+   migration 005.
+2. **TRUNCATE was granted to `anon` and `authenticated`.** TRUNCATE bypasses RLS,
+   so either role could have emptied every table including other accounts' rows.
+   Not reachable through PostgREST's HTTP verbs, but a standing privilege that
+   must not exist. Revoked in migration 005, and probe check 11 confirms it is
+   now refused.
+
+Both are documented in `docs/FEATURE-INVENTORY.md` with the evidence.
+
+The remaining untested rows are the ones that matter most before opening
+registration to strangers, and they all need the same two things: a Windows
+machine and a real Bedrock client. They are listed as a pre-launch checklist in
+`docs/INSTALLATION.md` rather than assumed to pass.
+

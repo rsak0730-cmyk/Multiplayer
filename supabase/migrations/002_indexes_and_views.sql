@@ -27,8 +27,21 @@ create index if not exists idx_audit_logs_created
 
 -- ---------------------------------------------------------------------------
 -- Helper view: node online status (online if seen within 90 seconds)
+--
+-- SECURITY: both views below are created WITH (security_invoker = true).
+-- A normal PostgreSQL view executes with the privileges of its OWNER, which in
+-- Supabase is a role that bypasses RLS — so selecting from the view would
+-- return EVERY user's nodes and servers regardless of the owner_id policies on
+-- the underlying tables. security_invoker makes the view run as the calling
+-- role instead, so the RLS policies on nodes/servers/server_configs still
+-- apply. Requires PostgreSQL 15+; this project runs 17.
 -- ---------------------------------------------------------------------------
-create or replace view public.node_status_view as
+drop view if exists public.server_overview_view;
+drop view if exists public.node_status_view;
+
+create view public.node_status_view
+with (security_invoker = true)
+as
 select
   n.*,
   case
@@ -40,9 +53,12 @@ select
 from public.nodes n;
 
 -- ---------------------------------------------------------------------------
--- Helper view: server + node + config joined for dashboard queries
+-- Helper view: server + node + config joined for dashboard queries.
+-- Joins node_status_view (not nodes) so computed_status is available.
 -- ---------------------------------------------------------------------------
-create or replace view public.server_overview_view as
+create view public.server_overview_view
+with (security_invoker = true)
+as
 select
   s.id as server_id,
   s.owner_id,
@@ -69,5 +85,5 @@ select
   c.difficulty,
   c.level_name
 from public.servers s
-left join public.nodes n on n.id = s.node_id
+left join public.node_status_view n on n.id = s.node_id
 left join public.server_configs c on c.server_id = s.id;

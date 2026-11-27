@@ -109,8 +109,9 @@ services/windows-agent/       C# .NET 8 agent that runs on your Windows PC
   src/OGHost.Agent/           the agent itself
   tests/OGHost.Agent.Tests/   xUnit suite (allowlist, paths, versions, backups…)
   scripts/install-service.ps1 run as a Windows service, survives restarts
-supabase/migrations/          001–004, additive and idempotent
-docs/                         ARCHITECTURE, SECURITY, NETWORKING, INSTALLATION
+supabase/migrations/          001–005, additive and idempotent
+docs/                         ARCHITECTURE, SECURITY, NETWORKING,
+                              INSTALLATION, FEATURE-INVENTORY
 .github/workflows/            web CI (ubuntu) and agent CI (windows)
 ```
 
@@ -129,8 +130,12 @@ cp apps/web/.env.example apps/web/.env.local   # fill in your Supabase keys
 npm run dev                                    # http://localhost:3000
 ```
 
-1. Apply `supabase/migrations/001`–`004` in order (they extend the existing
+1. Apply `supabase/migrations/001`–`005` in order (they extend the existing
    `nodes`, `servers`, `pairing_codes`, `node_events` tables and never drop them).
+   **Already applied to the live `og-host` project** — see
+   [docs/INSTALLATION.md](docs/INSTALLATION.md#step-1--database-migrations).
+   Do not skip `005`: it grants the privileges the app needs and revokes
+   TRUNCATE from the untrusted roles.
 2. Deploy `apps/web` to Vercel — **set Root Directory to `apps/web`**.
 3. Download the agent from the GitHub Actions artifact (no Windows toolchain
    needed) or `dotnet publish` it yourself.
@@ -163,8 +168,8 @@ original tables**.
 
 ### Test coverage worth knowing about
 
-Two tests exist purely to stop the two implementations from drifting apart,
-because no single runtime ever exercises both:
+Some tests exist purely to stop two things from drifting apart, because no single
+runtime ever exercises both sides:
 
 - `packages/shared/tests/allowlist-mirror.test.ts` reads the C#
   `AllowedCommands` set out of `ServerProcessManager.cs` and fails if the web
@@ -172,6 +177,14 @@ because no single runtime ever exercises both:
 - `apps/web/tests/networking-addresses.test.ts` asserts the panel's address
   plausibility check is the exact inverse of the agent's CGNAT detection,
   including the RFC 6598 boundaries that matter for Airtel / Jio / Vi.
+- `packages/shared/tests/constants.test.ts` fails if a Minecraft version literal
+  appears anywhere in product code.
+- `packages/shared/tests/migration-safety.test.ts` fails if any migration grants
+  TRUNCATE, TRIGGER or REFERENCES to `anon`/`authenticated`, grants the browser
+  role write access, creates a view without `security_invoker`, drops or
+  recreates one of the four original tables, or creates a table without enabling
+  RLS. This guard was verified by injecting a bad `GRANT TRUNCATE` and confirming
+  it fails — a test that cannot fail is not a test.
 
 ---
 
@@ -181,10 +194,15 @@ This project is honest about the difference between *built* and *proven*.
 
 | | |
 | --- | --- |
-| **Verified** | Web app typechecks and builds; 237 TypeScript unit tests pass; migrations are additive and idempotent; the allowlist and address checks mirror each other across languages |
-| **Written, not yet executed** | The C# agent has not been compiled or run — there is no .NET toolchain in the environment it was written in. It builds and its tests run in CI on `windows-latest`, but **CI has not yet been observed passing** |
-| **Not verified** | Joining a real Bedrock client through the Playit free tier over CGNAT. This is the single most important untested claim in the project |
-| **Not executed** | Cross-account access attempts against the live deployment; RLS verification against a real Supabase project; a real backup → restore and update → rollback round trip on a live server |
+| **Verified against the live database** | Migrations 001–005 applied to project `og-host`; 19 tables, all RLS-enabled, 27 policies; **cross-account isolation proven by a 16/16 SQL probe** with two throwaway users (B sees none of A's servers, events or backups; writes refused; TRUNCATE refused; `security_invoker` views enforce RLS). Test data removed and the clean state re-verified. |
+| **Verified by build/test** | `next lint` 0 warnings; `tsc --noEmit` clean; **253 TypeScript tests pass**; `next build` succeeds — also re-verified from a clean extraction of the distributed ZIP. |
+| **Written, not yet executed** | The C# agent has never been compiled or run — there is no .NET toolchain or Windows machine here. Its xUnit suite was audited line by line against the real signatures, and CI builds it on `windows-latest`, but **CI has not been observed passing**. |
+| **Not verified** | Joining a real Bedrock client through the Playit free tier over CGNAT. This is the single most important untested claim in the project. |
+| **Not executed** | The Next.js **route-level** cross-account test (the database layer beneath it is proven; two real browsers are not); a real backup → restore and update → rollback round trip on a live server. |
+
+Full per-feature status for the whole platform — including what is
+**UNSUPPORTED** and why — is in
+**[docs/FEATURE-INVENTORY.md](docs/FEATURE-INVENTORY.md)**.
 
 Nothing here is presented as working multiplayer until a real client has joined.
 The pre-launch checklist in

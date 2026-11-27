@@ -32,18 +32,73 @@ statements*) fails the build if anyone later adds a `DROP TABLE` against them.
 
 ---
 
-## Step 1 — Apply the database migrations
+## Step 1 — Database migrations
 
-Run these **in order** in the Supabase SQL Editor (or with the Supabase CLI).
+### Status: ALREADY APPLIED to the live project
+
+Migrations 001–005 were applied to the live `og-host` project
+(ref `chhttgriyauqlracclkm`) on **2026-11-27** and are recorded in its migration
+history:
+
+```
+20261127033553  oghost_001_core_schema
+20261127033649  oghost_002_indexes_and_views
+20261127033658  oghost_003_seed
+20261127033719  oghost_004_storage_and_network_settings
+20261127034127  oghost_005_role_privileges
+```
+
+Post-apply state, verified by query: **19 tables, all 19 RLS-enabled, 27
+policies, 3 private storage buckets, 4 seeded network providers.** The four
+original tables (`nodes`, `servers`, `pairing_codes`, `node_events`) were
+preserved — they were empty (0 rows) and every statement against them was
+`add column if not exists`.
+
+**If you are deploying to this project, skip to Step 2.** Re-running is harmless
+(all five are idempotent) but unnecessary. If you are deploying to a *different*
+Supabase project, run them in order.
+
+### Running them yourself
+
+Apply in order in the Supabase SQL Editor, or with the CLI.
 
 | File | What it does |
 | --- | --- |
-| `supabase/migrations/001_core_schema.sql` | Extends the existing four tables; creates `profiles`, `server_configs`, `node_commands`, `node_tokens`, `server_backups`, `server_versions`, `server_addons`, `network_endpoints`, `server_players`, `server_console_logs`, `audit_logs`; enables RLS and owner-scoped policies on all of them. |
-| `supabase/migrations/002_indexes_and_views.sql` | Performance indexes plus the `node_status_view` and `server_overview_view` read models. |
-| `supabase/migrations/003_seed.sql` | Seeds the `network_providers` catalogue (direct / playit / manual / custom). |
-| `supabase/migrations/004_storage_and_network_settings.sql` | Creates the three private storage buckets and their RLS policies, plus `node_network_settings`, `backup_schedules` and `drive_connections`. |
+| `001_core_schema.sql` | Extends the existing four tables; creates `profiles`, `server_configs`, `node_commands`, `node_tokens`, `server_backups`, `server_versions`, `server_addons`, `network_endpoints`, `server_players`, `server_console_logs`, `audit_logs`; enables RLS and owner-scoped policies on all of them. |
+| `002_indexes_and_views.sql` | Performance indexes plus the `node_status_view` and `server_overview_view` read models. Both views are created `WITH (security_invoker = true)` — see the warning below. |
+| `003_seed.sql` | Seeds the `network_providers` catalogue (direct / playit / manual / custom). |
+| `004_storage_and_network_settings.sql` | Creates the three private storage buckets and their RLS policies, plus `node_network_settings`, `backup_schedules` and `drive_connections`. |
+| `005_role_privileges.sql` | **Do not skip this one.** Grants the minimum privileges the app needs and revokes dangerous ones. Without it the application cannot read or write anything. |
 
-All four are idempotent — re-running them is safe.
+All five are idempotent — re-running is safe.
+
+> **Why 005 is mandatory.** An audit of the live project found that `anon`,
+> `authenticated` and `service_role` each held only `Dxt` — TRUNCATE, REFERENCES,
+> TRIGGER — with **no SELECT, INSERT, UPDATE or DELETE**. Two consequences:
+>
+> - The app could not function. Dashboard pages act as `authenticated` and every
+>   read failed with `permission denied for table nodes`; API routes use
+>   `service_role` and every write failed, including agent pairing and heartbeat.
+>   RLS policies were correct but unreachable, because a policy only filters rows
+>   a role is already allowed to touch.
+> - **TRUNCATE was granted to `anon` and `authenticated`, and TRUNCATE bypasses
+>   RLS.** Either role could have emptied every table, including rows belonging
+>   to other accounts. It is not reachable through PostgREST's HTTP verbs, but it
+>   is exactly the standing privilege that turns a later mistake into permanent
+>   data loss.
+>
+> Migration 005 revokes TRUNCATE/REFERENCES/TRIGGER from both untrusted roles,
+> grants `authenticated` SELECT only (RLS does the owner scoping), grants `anon`
+> SELECT on the public `network_providers` catalogue alone, gives `service_role`
+> the DML the API routes need, and sets default privileges so future tables
+> inherit the correct grants.
+
+> **Why the views need `security_invoker`.** A normal PostgreSQL view executes
+> with the privileges of its *owner*, which in Supabase is a role that bypasses
+> RLS. Selecting from `server_overview_view` would then return every user's nodes
+> and servers. `WITH (security_invoker = true)` makes the view run as the calling
+> role so the underlying policies still apply. Requires PostgreSQL 15+; this
+> project runs 17.
 
 **Verify:**
 
@@ -59,13 +114,20 @@ You should see the original four plus: `audit_logs`, `backup_schedules`,
 `server_versions`.
 
 ```sql
--- every table must have RLS on
-select relname, relrowsecurity from pg_class
-where relnamespace = 'public'::regnamespace and relkind = 'r'
-order by relname;
+-- every table must have RLS on, and no untrusted role may hold TRUNCATE
+select c.relname,
+       c.relrowsecurity as rls,
+       has_table_privilege('authenticated', c.oid, 'TRUNCATE') as auth_can_truncate,
+       has_table_privilege('anon',          c.oid, 'TRUNCATE') as anon_can_truncate,
+       has_table_privilege('authenticated', c.oid, 'SELECT')   as auth_can_select,
+       has_table_privilege('service_role',  c.oid, 'INSERT')   as svc_can_insert
+from pg_class c join pg_namespace n on n.oid = c.relnamespace
+where n.nspname = 'public' and c.relkind = 'r'
+order by c.relname;
 ```
 
-Every row must be `relrowsecurity = true`.
+Expected: `rls = true` everywhere, both `*_can_truncate = false`,
+`auth_can_select = true`, `svc_can_insert = true`.
 
 ---
 
@@ -289,13 +351,27 @@ direct mode selected; the tunnel provider's free tier limits; a wrong port.
 
 Before inviting anyone beyond yourself:
 
-**Must do**
+**Already done (2026-11-27, against the live project)**
 
-- [ ] Confirm RLS on every table (`Step 1` verify query) — all `true`.
+- [x] RLS enabled on every table — 19/19, verified by query.
+- [x] Cross-account isolation — verified by a live SQL probe with two throwaway
+      users: **16/16 checks passed**. User B saw 0 of A's servers, node_events
+      and backups; B's INSERT/UPDATE/DELETE were refused; the
+      `security_invoker` views enforced RLS instead of bypassing it. All probe
+      data deleted afterwards and the clean state re-verified (0 users, 0 rows).
+      Evidence: `docs/FEATURE-INVENTORY.md` → *Row Level Security*.
+- [x] Role privileges minimised — `authenticated` is read-only, `anon` sees only
+      the public provider catalogue, and TRUNCATE is revoked from both.
+- [x] Migrations are additive and preserve the original four tables.
+
+**Still must do — these need a deployed site and two real browsers**
+
+The database layer is verified. The **application layer is not**: the probe above
+tested PostgreSQL directly, not the Next.js API routes. Those still need running.
+
 - [ ] Create a **second** account in a private browser window and confirm it
-      cannot see the first account's devices, servers, backups or console. This
-      is the single most important test for a public multi-user platform, and it
-      has **not** been run yet.
+      cannot see the first account's devices, servers, backups or console.
+      The RLS underneath this is now proven; the route-level behaviour is not.
 - [ ] Try `GET /api/servers/<someone-else's-id>` while signed in as the second
       account. Expect `404`, not `403` and not data.
 - [ ] Confirm `SUPABASE_SERVICE_ROLE_KEY` never appears in browser DevTools →
