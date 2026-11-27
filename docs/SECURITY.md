@@ -330,10 +330,17 @@ app currently runs a `next` version with published critical DoS advisories.**
 ## Verification status
 
 Read the "Verified how" column carefully. **Written is not the same as run.**
-The xUnit rows below describe tests that exist and were audited line by line
-against the real C# signatures, but they have **never been executed** — there is
-no .NET toolchain in the environment where this code was written. They run in CI
-on `windows-latest`; that pipeline has not yet been observed passing.
+The xUnit rows below have now been executed: CI on `windows-latest` builds the
+solution and runs the suite green — **129 tests, 129 passing, 0 skipped**. There
+is still no .NET toolchain in the environment where the code was written, so
+every agent-side fix was reasoned from the compiler's own diagnostics and
+confirmed by CI rather than by a local run.
+
+Two limits on what that green run proves. These are **unit tests against stub
+fixtures**: no BDS process has ever been started, no Bedrock client has joined,
+and the agent has never run as a Windows service. A passing suite means the
+agent's own logic behaves as specified — it does not mean the platform works end
+to end. The rows further down the table separate the two.
 
 | Control | Verified how | Actually executed? |
 | --- | --- | --- |
@@ -352,12 +359,14 @@ on `windows-latest`; that pipeline has not yet been observed passing.
 | Voice proximity, dimension separation, permission and quality logic | vitest — 97 tests | **YES — all pass** |
 | Web/shared validation, allowlist mirror, CGNAT mirror, version discovery | vitest — 733 tests | **YES — all pass** |
 | Lint, typecheck, production build | `next lint` (0 warnings), `tsc --noEmit`, `next build` | **YES** |
-| Command allowlist rejects shell and accepts Bedrock commands | xUnit `CommandAllowlistTests` | **NO — written, never run** |
-| Path confinement and traversal rejection | xUnit `PathConfinementTests` | **NO — written, never run** |
-| Protected Bedrock system files | xUnit, same file | **NO — written, never run** |
-| CGNAT / private-range detection (agent side) | xUnit `CgnatDetectionTests` | **NO — written, never run** |
-| Zip-slip resistance in backup restore | xUnit `BackupManagerTests` | **NO — written, never run** |
-| Version comparison and download-page parsing | xUnit | **NO — written, never run** |
+| Command allowlist rejects shell and accepts Bedrock commands | xUnit `CommandAllowlistTests` — 35 cases | **YES — all pass in CI** |
+| Path confinement and traversal rejection | xUnit `PathConfinementTests` — 21 cases | **YES — all pass in CI** |
+| Protected Bedrock system files | xUnit, same file — included in the 21 above | **YES — all pass in CI** |
+| CGNAT / private-range detection (agent side) | xUnit `CgnatDetectionTests` — 25 cases | **YES — all pass in CI** |
+| Zip-slip resistance in backup restore | xUnit `BackupManagerTests` — 10 tests; a hostile archive with a `../../../../` entry is really built and really restored, and all five ancestor levels are checked for the escaped file | **YES — all pass in CI** |
+| Version comparison and download-page parsing | xUnit `VersionComparisonTests` (12) + `DownloadPageParsingTests` (9) | **YES — all pass in CI** |
+| Pairing code never persisted to the agent config file | xUnit `ConfigStoreTests` — 7 tests; asserts the code is absent from `config.json` while the issued token is present | **YES — all pass in CI** |
+| Engine/world layout keeps worlds outside engine directories, and a missing binary means "not installed" | xUnit `InstallerLayoutTests` — 10 tests | **YES — all pass in CI** |
 | Real BDS process behaviour | Needs Windows + official BDS | **NO** |
 | Real Bedrock client joining a hosted server | Needs Windows + BDS + a client on mobile data | **NO** |
 | Backup → restore round trip on a live server | Needs Windows + BDS | **NO** |

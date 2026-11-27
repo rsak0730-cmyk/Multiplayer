@@ -13,7 +13,7 @@ backend works.
 | Status | Meaning |
 | --- | --- |
 | **IMPLEMENTED AND TESTED** | Code exists and has been executed. For SQL/TypeScript, executed in this audit or by an automated suite. |
-| **IMPLEMENTED, NOT TESTED** | Code exists and is internally consistent, but has never been run. Applies to almost the whole Windows agent — there is no .NET toolchain or Windows machine here. |
+| **IMPLEMENTED, NOT TESTED** | Code exists and is internally consistent, but has not been executed against the thing it operates on. Applies to most of the Windows agent: its own logic is compiled and unit-tested in CI, but no BDS process has been started and no client has joined. A parenthetical **(unit)** on a row means an automated suite has really executed that logic against stub fixtures — real, but not end to end. |
 | **PARTIALLY IMPLEMENTED** | A usable subset exists; named gaps are real gaps. |
 | **EXPERIMENTAL** | Works only under stated conditions; must not be presented as reliable. |
 | **BLOCKED BY EXTERNAL DEPENDENCY** | Requires a third party, credential, or asset OG HOST does not control. |
@@ -22,7 +22,9 @@ backend works.
 
 A rule applied throughout: **a panel existing does not mean the feature works.**
 Several items below have UI and still are not "implemented and tested", because
-the agent that would execute them has never run.
+the agent that would execute them has never driven a real server. That agent does
+now compile and its 129 unit tests pass in CI; a green suite is evidence about
+its own logic, not about multiplayer working.
 
 ---
 
@@ -174,12 +176,36 @@ The total grew in three steps, each tied to a defect rather than to decoration:
 the privilege and view defects found here from regressing, +97 as
 `voice.test.ts` plus +21 further migration guards after 006/007.
 
-### Windows agent — IMPLEMENTED, NOT TESTED
+### Windows agent — COMPILES AND UNIT-TESTS IN CI, NEVER RUN AGAINST A REAL SERVER
 
-Complete C# source and an xUnit suite exist. **Neither has ever been compiled.**
-There is no .NET SDK in this environment. CI builds and tests it on
-`windows-latest`, but that pipeline has not been observed passing. Every
-agent-dependent row below inherits this status.
+CI on `windows-latest` now builds the solution (`dotnet build -c Release`) and
+runs the xUnit suite green: **129 tests, 129 passing, 0 skipped**. Both publish
+jobs produce self-contained single-file binaries for `win-x64` and `win-arm64`.
+
+| Test class | Cases | What it really exercises |
+| --- | --- | --- |
+| `CommandAllowlistTests` | 35 | The 68-entry BDS console allowlist: shell rejected, Bedrock commands accepted |
+| `CgnatDetectionTests` | 25 | RFC 6598 / 1918 / link-local / loopback / `0/8` boundaries |
+| `PathConfinementTests` | 21 | `ResolveInsideRoot`, protected Bedrock system files |
+| `VersionComparisonTests` | 12 | BDS version ordering |
+| `BackupManagerTests` | 10 | A real zip round trip, including a hostile `../../../../` entry |
+| `InstallerLayoutTests` | 10 | Engine/world layout; a missing binary means "not installed" |
+| `DownloadPageParsingTests` | 9 | Mojang download-page parsing |
+| `ConfigStoreTests` | 7 | Pairing code never written to `config.json` |
+| **Total** | **129** | |
+
+There is still no .NET SDK in the environment where the code was written, so each
+fix was reasoned from the compiler's own diagnostics and confirmed by CI. The
+earlier version of this document said the first real Windows run would produce
+findings. It did: **11 defects**, 8 that did not compile (`UdpClient.SendAsync`
+bound to a `(byte[], int, string, int)` overload; `.Value` used on a record, which
+is a reference type; two `required init` properties assigned after construction; a
+missing `using`; a one-argument `DoesNotContain`) and 3 that failed at runtime.
+Every one of them had survived a line-by-line audit against the real signatures.
+
+What this does **not** prove: the agent has never run as a Windows service, never
+started a BDS process, never downloaded a real engine, and never served a client.
+Rows below keep their end-to-end status accordingly.
 
 ### Real Bedrock multiplayer — NOT TESTED
 
@@ -220,7 +246,7 @@ rollback path exists. It also depends on §4 categories, which do not exist yet.
 | Signed-URL upload transfer (never through a serverless body) | IMPLEMENTED, NOT TESTED | Correct architecture for Vercel's ~4.5 MB body cap: browser → Supabase Storage, agent pulls via short-lived signed URL. |
 | SHA-256 checksums | PARTIALLY IMPLEMENTED | Computed for BDS archives; not for world uploads. |
 | File-type validation | IMPLEMENTED, NOT TESTED | Extension allowlist + manifest inspection. |
-| Path-traversal protection on extraction | IMPLEMENTED, NOT TESTED | `ResolveInsideRoot` on every entry; tested for zip-slip in the xUnit suite. |
+| Path-traversal protection on extraction | IMPLEMENTED AND TESTED (unit) | `ResolveInsideRoot` on every entry. Executed for real: `BackupManagerTests` builds an archive containing a `worlds/<world>/../../../../escape.txt` entry, restores it through `BackupManager.RestoreAsync`, and then checks all five ancestor levels plus every file under the data directory for the escaped name. Never run against a live server's world. |
 | **Decompression-bomb protection** | **NOT IMPLEMENTED** | No uncompressed-size or entry-count ceiling. Real gap. |
 | `level.dat` validation, required `db` directory check | **NOT IMPLEMENTED** | Not validated. A malformed world would be installed and BDS would fail at start. |
 | World metadata extraction and preview | **NOT IMPLEMENTED** | |
@@ -465,7 +491,7 @@ approximated by manifest checks.
 
 | Item | Status | Notes |
 | --- | --- | --- |
-| Create backup (world + config) | IMPLEMENTED, NOT TESTED | Real zip round-trip in the xUnit suite. |
+| Create backup (world + config) | IMPLEMENTED AND TESTED (unit) | Real zip round trip, now executed: archive contents asserted by entry name, metadata (`server_id`, `world_name`, `minecraft_version`, `created_at`) asserted, delete asserted, hostile names sanitised, and a full restore of a deleted world asserted byte-for-byte. Never against a live server. |
 | Restore | IMPLEMENTED, NOT TESTED | |
 | List / delete / prune (keep N) | IMPLEMENTED, NOT TESTED | Prune tested. |
 | Scheduled backups | IMPLEMENTED, NOT TESTED | `BackupScheduler` + `backup_schedules` (interval 1–168 h, keep 1–50). |
@@ -620,31 +646,41 @@ would have to be verified before the status could change.
 
 ### BLOCKED BY THIS ENVIRONMENT
 
-There is no Android SDK, no Windows host, no .NET toolchain and no Minecraft
-client here, so the §23 device test matrices (Android 12, Windows 11,
-multi-device) cannot be executed. Everything above is labelled accordingly rather
-than claimed as tested.
+There is no Android SDK, no Windows host and no Minecraft client here. There is
+no .NET toolchain here either, but CI supplies one: the agent is compiled and its
+129 tests executed on `windows-latest`. What CI cannot supply is a Bedrock client,
+a real engine download in service, or an Indian mobile-data network, so the §23
+device test matrices (Android 12, Windows 11, multi-device) remain unexecuted.
+Everything above is labelled accordingly rather than claimed as tested.
 
 ## Summary counts
 
 | Status | Count | Prompt 06 delta |
 | --- | --- | --- |
-| IMPLEMENTED AND TESTED | 22 | +6 |
-| IMPLEMENTED, NOT TESTED | 38 | +3 |
+| IMPLEMENTED AND TESTED | 24 | +6 |
+| IMPLEMENTED, NOT TESTED | 36 | +3 |
 | PARTIALLY IMPLEMENTED | 27 | — |
 | BLOCKED BY EXTERNAL DEPENDENCY | 3 | — |
 | NOT IMPLEMENTED | ~75 | +12 |
 | UNSUPPORTED | 10 | +6 |
 
-The counts above the line predate prompt 06 and are unchanged; the delta column is
-the multi-engine work described in the previous section. Test totals are current:
-**733 passing** (381 shared, 352 web) across 9 applied migrations and 32 tables.
+The counts above the line predate prompt 06, and the delta column is still
+attributable to the multi-engine work described in the previous section — it has
+not been rewritten to absorb a later change. Two rows (path-traversal protection
+and backup creation) moved from NOT TESTED to TESTED (unit) for a different
+reason: the agent suite ran for the first time. That is +2 and −2 against the
+totals, not against prompt 06. Test totals are current: **862 passing** — 733
+TypeScript (381 shared, 352 web) plus **129 C# agent tests** — across 9 applied
+migrations and 32 tables.
 
 The two numbers that matter most:
 
-- **Everything marked "IMPLEMENTED, NOT TESTED" is agent code that has never
-  been compiled.** That is 38 items resting on one unexecuted build. The first
-  real Windows run will produce findings.
+- **The agent compiles and its 129 unit tests pass, and 11 defects were found the
+  moment it did.** 36 items remain marked "IMPLEMENTED, NOT TESTED": their code is
+  built, and where a unit test exists its logic is executed, but none of them has
+  driven a real server. The prediction recorded here earlier — that the first real
+  Windows run would produce findings — was correct, and it is the reason this
+  document separates "audited" from "executed".
 - **Nothing involving actual Minecraft gameplay has ever happened.** No BDS
   process has started, no client has joined, no world has been backed up and
   restored on a real server.
