@@ -1,0 +1,132 @@
+name: Windows Agent CI
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "services/windows-agent/**"
+      - ".github/workflows/windows-agent.yml"
+  pull_request:
+    paths:
+      - "services/windows-agent/**"
+      - ".github/workflows/windows-agent.yml"
+  workflow_dispatch:
+  release:
+    types: [published]
+
+concurrency:
+  group: agent-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_VERSION: "8.0.x"
+  AGENT_DIR: services/windows-agent
+
+jobs:
+  test:
+    name: Build and test
+    runs-on: windows-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Restore
+        working-directory: ${{ env.AGENT_DIR }}
+        run: dotnet restore OGHost.Agent.sln
+
+      - name: Build (Release)
+        working-directory: ${{ env.AGENT_DIR }}
+        run: dotnet build OGHost.Agent.sln -c Release --no-restore
+
+      - name: Test
+        working-directory: ${{ env.AGENT_DIR }}
+        run: dotnet test OGHost.Agent.sln -c Release --no-build --logger "trx;LogFileName=agent-tests.trx" --results-directory TestResults
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-test-results
+          path: ${{ env.AGENT_DIR }}/TestResults/**/*.trx
+          if-no-files-found: warn
+
+  publish:
+    name: Publish release artifacts
+    needs: test
+    runs-on: windows-latest
+    timeout-minutes: 30
+    strategy:
+      matrix:
+        rid: [win-x64, win-arm64]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Publish self-contained single-file agent
+        working-directory: ${{ env.AGENT_DIR }}
+        run: >
+          dotnet publish src/OGHost.Agent/OGHost.Agent.csproj
+          -c Release -r ${{ matrix.rid }} --self-contained true
+          -p:PublishSingleFile=true
+          -p:IncludeNativeLibrariesForSelfExtract=true
+          -p:EnableCompressionInSingleFile=true
+          -o publish/${{ matrix.rid }}
+
+      - name: Stage artifact
+        shell: pwsh
+        run: |
+          $stage = "dist/og-host-windows-agent-${{ matrix.rid }}"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          New-Item -ItemType Directory -Force -Path "$stage/scripts" | Out-Null
+
+          Copy-Item "${{ env.AGENT_DIR }}/publish/${{ matrix.rid }}/*" $stage -Recurse -Force
+          Copy-Item "${{ env.AGENT_DIR }}/scripts/install-service.ps1" "$stage/scripts/" -Force
+          Copy-Item "${{ env.AGENT_DIR }}/README.md" "$stage/AGENT-README.md" -Force
+
+          # Fail loudly rather than publishing an artifact with no executable in it.
+          if (-not (Test-Path "$stage/OGHost.Agent.exe")) {
+            throw "OGHost.Agent.exe missing from the staged artifact."
+          }
+          Get-ChildItem -Recurse $stage | Select-Object -ExpandProperty FullName
+
+      - name: Compute checksum
+        shell: pwsh
+        working-directory: dist
+        run: |
+          $zip = "og-host-windows-agent-${{ matrix.rid }}.zip"
+          Compress-Archive -Path "og-host-windows-agent-${{ matrix.rid }}/*" -DestinationPath $zip -Force
+          $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+          "$hash  $zip" | Out-File -FilePath "$zip.sha256" -Encoding ascii -NoNewline
+          Write-Host "SHA256: $hash"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: og-host-windows-agent-${{ matrix.rid }}
+          path: |
+            dist/og-host-windows-agent-${{ matrix.rid }}.zip
+            dist/og-host-windows-agent-${{ matrix.rid }}.zip.sha256
+          retention-days: 30
+
+      - name: Attach to release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/og-host-windows-agent-${{ matrix.rid }}.zip
+            dist/og-host-windows-agent-${{ matrix.rid }}.zip.sha256
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,74 @@
+# Automated dependency updates.
+#
+# This repository knowingly ships some dependencies behind major-version
+# advisories that cannot be fixed without a breaking upgrade (see
+# docs/SECURITY.md → "Known dependency advisories"). Dependabot is the intended
+# route for those: it opens a pull request, CI runs the full lint / typecheck /
+# unit-test / build gate plus the Windows agent test suite, and a human decides.
+#
+# Do not merge a major-version bump on a green build alone. Read the migration
+# notes, and for `next` also check the React major that comes with it.
+
+version: 2
+
+updates:
+  # --- Web: npm workspaces at the repository root ---------------------------
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: "deps(web)"
+    labels:
+      - "dependencies"
+      - "web"
+    groups:
+      # Keep routine patch/minor noise in one PR so majors stay visible.
+      minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
+      # TypeScript tooling moves together; splitting it produces broken states.
+      typescript:
+        patterns:
+          - "typescript"
+          - "@types/*"
+          - "eslint*"
+          - "@next/eslint-plugin-next"
+
+  # --- Windows agent: NuGet --------------------------------------------------
+  - package-ecosystem: "nuget"
+    directory: "/services/windows-agent"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps(agent)"
+    labels:
+      - "dependencies"
+      - "agent"
+    groups:
+      dotnet:
+        patterns:
+          - "Microsoft.Extensions.*"
+          - "System.*"
+      xunit:
+        patterns:
+          - "xunit*"
+          - "Microsoft.NET.Test.Sdk"
+
+  # --- CI actions ------------------------------------------------------------
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps(ci)"
+    labels:
+      - "dependencies"
+      - "ci"
