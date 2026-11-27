@@ -15,7 +15,7 @@
     "test": "npm run test --workspace @oghost/shared && npm run test --workspace @oghost/web"
   },
   "devDependencies": {
-    "typescript": "^5.6.0"
+    "typescript": "^7.0.2"
   },
   "engines": {
     "node": ">=20"
