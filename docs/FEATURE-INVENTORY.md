@@ -148,8 +148,8 @@ TRUNCATE hole is closed.
 
 ### Schema state — IMPLEMENTED AND TESTED
 
-29 tables, **all 29 with RLS enabled**, 31 policies, 3 private storage buckets,
-4 seeded network providers, 7 migrations in history.
+32 tables, **all 32 with RLS enabled**, 33 policies, 3 private storage buckets,
+4 seeded network providers, 9 migrations in history.
 
 Ten of those tables are OG VOICE (migration 006) and hold 0 rows — the schema is
 live, no voice data exists yet. Migration 007 followed immediately, because
@@ -165,7 +165,7 @@ wrong about the future — a static test cannot see an inherited ACL.
 ### Web application — IMPLEMENTED AND TESTED
 
 `npm run lint` (0 warnings), `npm run typecheck` (exit 0), `npm run test`
-(**371 tests passing**: 290 shared + 81 web), `next build` (exit 0; 26 API
+(**733 tests passing**: 381 shared + 352 web), `next build` (exit 0; 26 API
 routes, 25 pages). Also verified from a clean extraction of the distributed ZIP:
 `npm ci` then all four gates again, all green.
 
@@ -511,9 +511,9 @@ approximated by manifest checks.
 
 | Item | Status | Notes |
 | --- | --- | --- |
-| Additive, idempotent migrations | IMPLEMENTED AND TESTED | 001–007 applied to the live project; original four tables preserved; CI guard fails any migration that drops them. |
+| Additive, idempotent migrations | IMPLEMENTED AND TESTED | 001–009 applied to the live project; original four tables preserved; CI guard fails any migration that drops them. |
 | RLS on every table | IMPLEMENTED AND TESTED | 29/29 enabled; verified by query. |
-| No RLS-bypassing privilege for untrusted roles | IMPLEMENTED AND TESTED | 0 of 29 tables expose TRUNCATE/REFERENCES/TRIGGER to `anon`/`authenticated`; default ACL altered by 007 so new tables cannot re-inherit them. |
+| No RLS-bypassing privilege for untrusted roles | IMPLEMENTED AND TESTED | 0 of 32 tables expose TRUNCATE/REFERENCES/TRIGGER to `anon`/`authenticated`; default ACL altered by 007 so new tables cannot re-inherit them. |
 | Owner isolation | IMPLEMENTED AND TESTED | 16/16 probe checks. |
 | Foreign keys and indexes | IMPLEMENTED AND TESTED | FKs verified present; 6 performance indexes created. |
 | Check constraints on enums and bounds | IMPLEMENTED AND TESTED | Status/provider/channel/gamemode/difficulty constraints, port 1024–65535, max_players 1–100, interval 1–168 h, keep 1–50. |
@@ -535,16 +535,110 @@ approximated by manifest checks.
 
 ---
 
+## Multi-engine and multi-device hosting (prompt 06)
+
+Added on top of the existing platform. Nothing here replaces the official BDS
+workflow: BDS on a Windows node still creates, installs and starts exactly as
+before, and the engine defaults to `bds` at every layer (database column default,
+API schema default, form initial state).
+
+The engine catalog in `packages/shared/src/engines.ts` is the single authority.
+Migration 009 mirrors it into SQL CHECK constraints, the API derives edition,
+runtime and port from it, and the Creation Studio reads it to decide what to
+offer. Tests bind all four together, so the database cannot drift from the
+catalog.
+
+### Engine support matrix
+
+Statuses are the catalog's own values, held down by tests. **No engine is
+`supported` on any platform yet** — nothing has been installed, started or joined
+by a client.
+
+| Engine | Edition | Runtime | Windows | Linux / macOS | Android | Install adapter | Publisher checksum |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Minecraft Bedrock Dedicated Server | Bedrock | native | UNVERIFIED | NOT IMPLEMENTED / UNSUPPORTED | UNSUPPORTED | yes (`BdsInstaller`) | none published |
+| PowerNukkitX | Bedrock | JVM | NOT IMPLEMENTED | NOT IMPLEMENTED | UNSUPPORTED | no | none published |
+| PocketMine-MP | Bedrock | PHP | NOT IMPLEMENTED | NOT IMPLEMENTED | UNSUPPORTED | no | none published |
+| Paper | Java | JVM | NOT IMPLEMENTED | NOT IMPLEMENTED | UNSUPPORTED | no | SHA-256 endpoint documented, not reachable from here |
+| Purpur | Java | JVM | NOT IMPLEMENTED | NOT IMPLEMENTED | UNSUPPORTED | no | none confirmed, so treated as absent |
+
+`UNVERIFIED` for BDS on Windows means fully implemented in the agent and never
+compiled — there is no .NET toolchain in this environment. Android is
+`UNSUPPORTED` for all five: Mojang publishes BDS for x86_64 Windows and Linux
+only, and an ordinary Android app has neither a usable JVM for server JARs nor a
+PHP runtime. Each entry carries the reason and what verification would change it.
+
+### IMPLEMENTED AND TESTED (+6 items, +138 tests)
+
+| Item | Evidence |
+| --- | --- |
+| Engine catalog and compatibility model | 86 tests: exactly one engine may claim `official`; no engine may claim a platform it cannot run; Java plugins refused on every Bedrock engine and vice versa; Bedrock LevelDB and Java Anvil never interchangeable; an engine with unconfirmed world formats answers "unknown", not "yes" |
+| Migration 009 mirrors the catalog in SQL | 12 tests parse the migration and compare engine ids, editions and integrity rules against the catalog. Mutation-tested: removing an engine, listing one in both edition branches and narrowing `game_type` are each caught |
+| Engine-aware creation decisions | 26 tests over `resolveEngineForNode`, `engineInstallCommand`, `engineChoicesForPlatform`. An unrecognised device platform refuses rather than defaulting to Windows |
+| Agent platform resolution and node identity | 26 tests over `resolveAgentPlatform` and `defaultNodeIdentity`. Legacy Windows values preserved byte for byte |
+| Node recommendation (§11 core logic) | `recommendNodes` ranks with explanations, names the missing requirement, and refuses to pool memory across devices — two nodes with 3 GB free do not satisfy a 4 GB request |
+| Console dialect separation (§9 groundwork) | BDS, Bukkit-derived and PocketMine grammars are distinct values; all five engines are marked unconfirmed, so no allowlist can be shared by accident |
+
+### The migration guard was amended, deliberately
+
+`migration-safety.test.ts` forbade any `alter table` on the four pre-existing
+tables without `add column if not exists`. Widening `servers.game_type` from
+bedrock-only to `(bedrock, java)` needs `drop`/`add constraint`, so the guard had
+to change. The diff is +86 lines and 0 deletions: every previous assertion still
+runs on every other statement. The exception is an allowlist of two named
+constraints on one table, a constraint statement may contain no column DDL, a
+dropped constraint must be re-added in the same migration, and the replacement
+must still accept every value the old one accepted — so a CHECK can only widen.
+Proven by mutation: dropping `servers_pkey` fails two tests, dropping a column
+fails, renaming a column fails.
+
+### IMPLEMENTED, NOT EXECUTED (+3)
+
+| Item | Why it has not run |
+| --- | --- |
+| `POST /api/servers` engine path | Typechecks and builds; no request has been made against it and no server row has been created through it |
+| `POST /api/agent/pairing/claim` Android registration | No Android agent exists to claim a code |
+| Creation Studio engine picker | Never rendered in a browser against live data; its logic is covered through the pure functions it calls |
+
+### NOT IMPLEMENTED
+
+Engine adapters in the agent for PowerNukkitX, PocketMine-MP, Paper and Purpur ·
+runtime manager (JVM/PHP detect, install, verify; nothing writes `node_runtimes`)
+· engine manager install → verify → register pipeline (nothing writes
+`node_engines`) · universal console with per-dialect command allowlists · engine
+switching and server migration (§12) · world format detection and conversion
+(§13) · engine-aware package manager (§14) · per-device and per-engine recovery
+policies (§17) · the Android agent app itself (§2) · node diagnostics and limits
+(§10) · scheduler UI over `recommendNodes` (§11) · CI jobs for adapters and an
+Android build (§22).
+
+### UNSUPPORTED (+6)
+
+All five engines on Android, and BDS on macOS (Mojang discontinued the macOS
+Bedrock server). Each is recorded in the catalog with its reason and with what
+would have to be verified before the status could change.
+
+### BLOCKED BY THIS ENVIRONMENT
+
+There is no Android SDK, no Windows host, no .NET toolchain and no Minecraft
+client here, so the §23 device test matrices (Android 12, Windows 11,
+multi-device) cannot be executed. Everything above is labelled accordingly rather
+than claimed as tested.
+
 ## Summary counts
 
-| Status | Count |
-| --- | --- |
-| IMPLEMENTED AND TESTED | 22 |
-| IMPLEMENTED, NOT TESTED | 38 |
-| PARTIALLY IMPLEMENTED | 27 |
-| BLOCKED BY EXTERNAL DEPENDENCY | 3 |
-| NOT IMPLEMENTED | ~75 |
-| UNSUPPORTED | 10 |
+| Status | Count | Prompt 06 delta |
+| --- | --- | --- |
+| IMPLEMENTED AND TESTED | 22 | +6 |
+| IMPLEMENTED, NOT TESTED | 38 | +3 |
+| PARTIALLY IMPLEMENTED | 27 | — |
+| BLOCKED BY EXTERNAL DEPENDENCY | 3 | — |
+| NOT IMPLEMENTED | ~75 | +12 |
+| UNSUPPORTED | 10 | +6 |
+
+The counts above the line predate prompt 06 and are unchanged; the delta column is
+the multi-engine work described in the previous section. Test totals are current:
+**733 passing** (381 shared, 352 web) across 9 applied migrations and 32 tables.
 
 The two numbers that matter most:
 

@@ -109,7 +109,7 @@ services/windows-agent/       C# .NET 8 agent that runs on your Windows PC
   src/OGHost.Agent/           the agent itself
   tests/OGHost.Agent.Tests/   xUnit suite (allowlist, paths, versions, backups…)
   scripts/install-service.ps1 run as a Windows service, survives restarts
-supabase/migrations/          001–007, additive and idempotent
+supabase/migrations/          001–009, additive and idempotent
 docs/                         ARCHITECTURE, SECURITY, NETWORKING,
                               INSTALLATION, FEATURE-INVENTORY
 .github/workflows/            web CI (ubuntu) and agent CI (windows)
@@ -189,15 +189,52 @@ runtime ever exercises both sides:
 
 ---
 
+## Engine and device support
+
+OG HOST models five engines and two device families. The catalog in
+`packages/shared/src/engines.ts` is the single authority; migration 009 mirrors it
+into SQL CHECK constraints, the API derives edition, runtime and port from it, and
+the Creation Studio offers only what the chosen device can run — with a reason for
+everything it does not offer.
+
+**Nothing is marked supported yet.** No engine has been installed, started or
+joined by a client. The vocabulary is deliberately five values wide so "we wrote
+the code" is never reported as "it works".
+
+| Engine | Edition | Runtime | Windows | Android |
+| --- | --- | --- | --- | --- |
+| Minecraft Bedrock Dedicated Server | Bedrock | native | implemented, never compiled | unsupported — Mojang publishes no ARM or Android build |
+| PowerNukkitX | Bedrock | JVM | no adapter | unsupported — no usable JVM for server JARs |
+| PocketMine-MP | Bedrock | PHP | no adapter | unsupported — Android ships no PHP runtime |
+| Paper | Java | JVM | no adapter | unsupported |
+| Purpur | Java | JVM | no adapter | unsupported |
+
+Two rules the code enforces rather than documents:
+
+- **Bedrock add-ons and Java plugins are never interchangeable.** A Java plugin is
+  refused on every Bedrock engine and a behavior pack on every Java engine, each
+  with a message saying why. Bedrock LevelDB and Java Anvil worlds are likewise
+  never treated as compatible, and an engine whose world formats were not
+  confirmed answers "unknown" instead of "yes".
+- **Resources are never pooled across devices.** Two nodes with 3 GB free each do
+  not satisfy a 4 GB server, and no server is ever moved between your devices
+  automatically.
+
+Only official BDS is described as official. PowerNukkitX and PocketMine-MP both
+speak the Bedrock protocol and neither is Mojang's server; each says so in its own
+limitation list, and a test fails if a second engine ever claims `official`.
+
+---
+
 ## Verification status — read this
 
 This project is honest about the difference between *built* and *proven*.
 
 | | |
 | --- | --- |
-| **Verified against the live database** | Migrations 001–007 applied to project `og-host`; 29 tables, all RLS-enabled, 31 policies; **cross-account isolation proven by a 16/16 SQL probe** with two throwaway users (B sees none of A's servers, events or backups; writes refused; TRUNCATE refused; `security_invoker` views enforce RLS). Test data removed and the clean state re-verified. |
-| **Found by applying, not by reading** | Supabase's default ACL re-grants TRUNCATE (which bypasses RLS) to every table created after migration 005. Four voice tables inherited it before 007 closed it; a re-audit now reports **0 of 29 exposed**. Static tests passed throughout — only querying the live `pg_default_acl` revealed it. |
-| **Verified by build/test** | `next lint` 0 warnings; `tsc --noEmit` clean; **371 TypeScript tests pass**; `next build` succeeds — also re-verified from a clean extraction of the distributed ZIP. |
+| **Verified against the live database** | Migrations 001–009 applied to project `og-host`; 32 tables, all 32 RLS-enabled, 33 policies; **cross-account isolation proven by a 16/16 SQL probe** with two throwaway users (B sees none of A's servers, events or backups; writes refused; TRUNCATE refused; `security_invoker` views enforce RLS). Test data removed and the clean state re-verified. |
+| **Found by applying, not by reading** | Supabase's default ACL re-grants TRUNCATE (which bypasses RLS) to every table created after migration 005. Four voice tables inherited it before 007 closed it; a re-audit now reports **0 of 32 exposed**. Static tests passed throughout — only querying the live `pg_default_acl` revealed it. |
+| **Verified by build/test** | `next lint` 0 warnings; `tsc --noEmit` clean; **733 TypeScript tests pass**; `next build` succeeds — also re-verified from a clean extraction of the distributed ZIP. |
 | **OG VOICE — verified** | Schema live and matching the repo file exactly (10 tables, 43 constraints, 22 indexes); the six credential tables hold no privilege for `anon`/`authenticated`; proximity gain, **dimension separation**, the ten permission states, quality classification and verification-code format covered by 97 unit tests. |
 | **OG VOICE — not verified** | No real microphone capture, no two-way audio, no measured latency, no companion app build, no live Bedrock position sync, no NAT traversal on Indian mobile carriers. Needs hardware this environment does not have. See `docs/SECURITY.md`. |
 | **Written, not yet executed** | The C# agent has never been compiled or run — there is no .NET toolchain or Windows machine here. Its xUnit suite was audited line by line against the real signatures, and CI builds it on `windows-latest`, but **CI has not been observed passing**. |

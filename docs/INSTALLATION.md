@@ -36,7 +36,7 @@ statements*) fails the build if anyone later adds a `DROP TABLE` against them.
 
 ### Status: ALREADY APPLIED to the live project
 
-Migrations 001–007 were applied to the live `og-host` project
+Migrations 001–009 were applied to the live `og-host` project
 (ref `chhttgriyauqlracclkm`) on **2026-11-27** and are recorded in its migration
 history:
 
@@ -48,17 +48,19 @@ history:
 20261127034127  oghost_005_role_privileges
 20261127040325  oghost_006_voice
 20261127040518  oghost_007_default_privilege_hardening
+20261127042312  oghost_008_voice_positions
+20261127053606  oghost_009_engine_model
 ```
 
-Post-apply state, verified by query: **29 tables, all 29 RLS-enabled, 31
+Post-apply state, verified by query: **32 tables, all 32 RLS-enabled, 33
 policies, 3 private storage buckets, 4 seeded network providers.** The four
 original tables (`nodes`, `servers`, `pairing_codes`, `node_events`) were
 preserved — they were empty (0 rows) and every statement against them was
-`add column if not exists`. Of the 29 tables, 10 belong to OG VOICE and hold
+`add column if not exists`. Of the 32 tables, 10 belong to OG VOICE and 2 to the engine model; the OG VOICE tables hold
 **0 rows**: the schema is in place, and no voice data exists yet.
 
 **If you are deploying to this project, skip to Step 2.** Re-running is harmless
-(all seven are idempotent) but unnecessary. If you are deploying to a *different*
+(all nine are idempotent) but unnecessary. If you are deploying to a *different*
 Supabase project, run them in order.
 
 ### Running them yourself

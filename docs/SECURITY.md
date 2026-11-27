@@ -343,14 +343,14 @@ on `windows-latest`; that pipeline has not yet been observed passing.
 | TRUNCATE (an RLS-bypassing operation) refused to untrusted roles | Same probe, check 11 | **YES** |
 | Views enforce RLS rather than bypassing it | Same probe: `node_status_view` → 1 row for B, `server_overview_view` → 0 | **YES** |
 | Role privileges are minimal (`authenticated` read-only, `anon` catalogue only) | `has_table_privilege` across all 29 public tables | **YES** |
-| No table grants TRUNCATE/REFERENCES/TRIGGER to `anon` or `authenticated` | `has_table_privilege` sweep after migration 007 — **0 of 29 exposed** | **YES** |
+| No table grants TRUNCATE/REFERENCES/TRIGGER to `anon` or `authenticated` | `has_table_privilege` sweep after migration 009 — **0 of 32 exposed** | **YES** |
 | Default ACL cannot re-grant them to tables created later | `pg_default_acl` → `anon=m, authenticated=rm` | **YES** |
-| Schema state: 29 tables, all RLS-enabled, 31 policies | `pg_class` / `pg_policies` query | **YES** |
+| Schema state: 32 tables, all RLS-enabled, 33 policies | `pg_class` / `pg_policies` query | **YES** |
 | Voice schema matches the repository migration exactly | 10 tables, 43 constraints, 10 table comments, 8 column comments, 4 triggers, 4 policies, 22 indexes | **YES** |
 | Voice credential tables unreachable from a browser session | 6 tables: `anon`/`authenticated` hold no privilege at all, and have no RLS policy | **YES** |
-| Additive, idempotent migrations preserve the original four tables | Applied 001–007 to the live project; all four preserved and still empty | **YES** |
+| Additive, idempotent migrations preserve the original four tables | Applied 001–009 to the live project; all four preserved and still empty | **YES** |
 | Voice proximity, dimension separation, permission and quality logic | vitest — 97 tests | **YES — all pass** |
-| Web/shared validation, allowlist mirror, CGNAT mirror, version discovery | vitest — 371 tests | **YES — all pass** |
+| Web/shared validation, allowlist mirror, CGNAT mirror, version discovery | vitest — 733 tests | **YES — all pass** |
 | Lint, typecheck, production build | `next lint` (0 warnings), `tsc --noEmit`, `next build` | **YES** |
 | Command allowlist rejects shell and accepts Bedrock commands | xUnit `CommandAllowlistTests` | **NO — written, never run** |
 | Path confinement and traversal rejection | xUnit `PathConfinementTests` | **NO — written, never run** |
@@ -408,7 +408,7 @@ invisible to both code review and the repository's own static migration tests.
    Fixed in migration 007, which does both halves: it alters the default ACL so
    future tables inherit only `anon=m, authenticated=rm`, and it sweeps every
    existing public table in a loop rather than from a list that would go stale.
-   Re-running the same audit query afterwards reports **0 of 29 tables exposed**,
+   Re-running the same audit query afterwards reports **0 of 32 tables exposed**,
    with `authenticated` retaining SELECT on all 29 (RLS does the scoping) and
    `anon` retaining SELECT on exactly one (`network_providers`).
 
