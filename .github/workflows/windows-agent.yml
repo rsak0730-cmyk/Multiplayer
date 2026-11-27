@@ -57,6 +57,69 @@ jobs:
           path: ${{ env.AGENT_DIR }}/TestResults/**/*.trx
           if-no-files-found: warn
 
+      # The console log and the uploaded artifact are both served from hosts
+      # outside api.github.com, so a failing test run is unreadable to anything
+      # that cannot open the Actions UI. The job summary is served by the
+      # check-run API, which makes it the one place failures stay retrievable
+      # programmatically — so parse the .trx and put every failure in it.
+      - name: Publish test failures to the job summary
+        if: always()
+        shell: pwsh
+        working-directory: ${{ env.AGENT_DIR }}
+        run: |
+          function To-Int([string]$value) {
+            if ([string]::IsNullOrEmpty($value)) { 0 } else { [int]$value }
+          }
+
+          $trxFiles = Get-ChildItem -Path TestResults -Filter '*.trx' -Recurse -ErrorAction SilentlyContinue
+
+          if (-not $trxFiles) {
+            'No .trx was produced: the build failed before the test step ran.' |
+              Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+            exit 0
+          }
+
+          $lines = New-Object System.Collections.Generic.List[string]
+          $totalAll = 0
+          $passedAll = 0
+          $failedAll = 0
+
+          foreach ($file in $trxFiles) {
+            [xml]$doc = Get-Content -Path $file.FullName -Raw
+            $counters = $doc.TestRun.ResultSummary.Counters
+            $totalAll += To-Int $counters.total
+            $passedAll += To-Int $counters.passed
+            $failedAll += To-Int $counters.failed
+
+            $lines.Add("### $($file.Name)")
+            $lines.Add("outcome: **$($doc.TestRun.ResultSummary.outcome)** · total $(To-Int $counters.total) · passed $(To-Int $counters.passed) · failed $(To-Int $counters.failed)")
+            $lines.Add('')
+
+            $notPassed = @($doc.TestRun.Results.UnitTestResult | Where-Object { $_.outcome -ne 'Passed' })
+            foreach ($test in $notPassed) {
+              $lines.Add("#### $($test.testName) — $($test.outcome)")
+              $message = $test.Output.ErrorInfo.Message
+              $stack = $test.Output.ErrorInfo.StackTrace
+              if ($message) {
+                $lines.Add('```')
+                $lines.Add(($message -replace "`r`n", "`n").Trim())
+                $lines.Add('```')
+              }
+              if ($stack) {
+                $trimmed = ($stack -replace "`r`n", "`n").Trim()
+                if ($trimmed.Length -gt 1500) { $trimmed = $trimmed.Substring(0, 1500) + ' ...[truncated]' }
+                $lines.Add('```')
+                $lines.Add($trimmed)
+                $lines.Add('```')
+              }
+              $lines.Add('')
+            }
+          }
+
+          $lines.Insert(0, '')
+          $lines.Insert(0, "**Agent tests: $totalAll total · $passedAll passed · $failedAll failed**")
+          $lines | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+
   publish:
     name: Publish release artifacts
     needs: test
