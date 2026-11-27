@@ -224,7 +224,11 @@ public sealed class BackupManagerTests : IDisposable
         var worldDir = _installer.WorldDirectory(World);
         for (var up = 1; up <= 5; up++)
         {
-            var ancestor = Path.GetFullPath(worldDir, string.Join('/', Enumerable.Repeat("..", up)));
+            // Path.GetFullPath(path, basePath): the relative part comes first.
+            // Passing the world directory as `path` and "../.." as `basePath`
+            // throws "Basepath argument is not fully qualified", because basePath is
+            // the one that has to be absolute.
+            var ancestor = Path.GetFullPath(string.Join('/', Enumerable.Repeat("..", up)), worldDir);
             Assert.False(File.Exists(Path.Combine(ancestor, "escape.txt")),
                 $"Traversal entry escaped {up} level(s) up to {ancestor}");
         }
