@@ -109,7 +109,7 @@ services/windows-agent/       C# .NET 8 agent that runs on your Windows PC
   src/OGHost.Agent/           the agent itself
   tests/OGHost.Agent.Tests/   xUnit suite (allowlist, paths, versions, backups…)
   scripts/install-service.ps1 run as a Windows service, survives restarts
-supabase/migrations/          001–005, additive and idempotent
+supabase/migrations/          001–007, additive and idempotent
 docs/                         ARCHITECTURE, SECURITY, NETWORKING,
                               INSTALLATION, FEATURE-INVENTORY
 .github/workflows/            web CI (ubuntu) and agent CI (windows)
@@ -130,12 +130,13 @@ cp apps/web/.env.example apps/web/.env.local   # fill in your Supabase keys
 npm run dev                                    # http://localhost:3000
 ```
 
-1. Apply `supabase/migrations/001`–`005` in order (they extend the existing
+1. Apply `supabase/migrations/001`–`007` in order (they extend the existing
    `nodes`, `servers`, `pairing_codes`, `node_events` tables and never drop them).
    **Already applied to the live `og-host` project** — see
    [docs/INSTALLATION.md](docs/INSTALLATION.md#step-1--database-migrations).
-   Do not skip `005`: it grants the privileges the app needs and revokes
-   TRUNCATE from the untrusted roles.
+   Do not skip `005` or `007`: `005` grants the privileges the app needs and
+   revokes TRUNCATE from the untrusted roles, and `007` fixes the default ACL so
+   tables created later do not quietly re-inherit it.
 2. Deploy `apps/web` to Vercel — **set Root Directory to `apps/web`**.
 3. Download the agent from the GitHub Actions artifact (no Windows toolchain
    needed) or `dotnet publish` it yourself.
@@ -194,8 +195,11 @@ This project is honest about the difference between *built* and *proven*.
 
 | | |
 | --- | --- |
-| **Verified against the live database** | Migrations 001–005 applied to project `og-host`; 19 tables, all RLS-enabled, 27 policies; **cross-account isolation proven by a 16/16 SQL probe** with two throwaway users (B sees none of A's servers, events or backups; writes refused; TRUNCATE refused; `security_invoker` views enforce RLS). Test data removed and the clean state re-verified. |
-| **Verified by build/test** | `next lint` 0 warnings; `tsc --noEmit` clean; **253 TypeScript tests pass**; `next build` succeeds — also re-verified from a clean extraction of the distributed ZIP. |
+| **Verified against the live database** | Migrations 001–007 applied to project `og-host`; 29 tables, all RLS-enabled, 31 policies; **cross-account isolation proven by a 16/16 SQL probe** with two throwaway users (B sees none of A's servers, events or backups; writes refused; TRUNCATE refused; `security_invoker` views enforce RLS). Test data removed and the clean state re-verified. |
+| **Found by applying, not by reading** | Supabase's default ACL re-grants TRUNCATE (which bypasses RLS) to every table created after migration 005. Four voice tables inherited it before 007 closed it; a re-audit now reports **0 of 29 exposed**. Static tests passed throughout — only querying the live `pg_default_acl` revealed it. |
+| **Verified by build/test** | `next lint` 0 warnings; `tsc --noEmit` clean; **371 TypeScript tests pass**; `next build` succeeds — also re-verified from a clean extraction of the distributed ZIP. |
+| **OG VOICE — verified** | Schema live and matching the repo file exactly (10 tables, 43 constraints, 22 indexes); the six credential tables hold no privilege for `anon`/`authenticated`; proximity gain, **dimension separation**, the ten permission states, quality classification and verification-code format covered by 97 unit tests. |
+| **OG VOICE — not verified** | No real microphone capture, no two-way audio, no measured latency, no companion app build, no live Bedrock position sync, no NAT traversal on Indian mobile carriers. Needs hardware this environment does not have. See `docs/SECURITY.md`. |
 | **Written, not yet executed** | The C# agent has never been compiled or run — there is no .NET toolchain or Windows machine here. Its xUnit suite was audited line by line against the real signatures, and CI builds it on `windows-latest`, but **CI has not been observed passing**. |
 | **Not verified** | Joining a real Bedrock client through the Playit free tier over CGNAT. This is the single most important untested claim in the project. |
 | **Not executed** | The Next.js **route-level** cross-account test (the database layer beneath it is proven; two real browsers are not); a real backup → restore and update → rollback round trip on a live server. |

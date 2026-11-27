@@ -36,7 +36,7 @@ statements*) fails the build if anyone later adds a `DROP TABLE` against them.
 
 ### Status: ALREADY APPLIED to the live project
 
-Migrations 001–005 were applied to the live `og-host` project
+Migrations 001–007 were applied to the live `og-host` project
 (ref `chhttgriyauqlracclkm`) on **2026-11-27** and are recorded in its migration
 history:
 
@@ -46,16 +46,19 @@ history:
 20261127033658  oghost_003_seed
 20261127033719  oghost_004_storage_and_network_settings
 20261127034127  oghost_005_role_privileges
+20261127040325  oghost_006_voice
+20261127040518  oghost_007_default_privilege_hardening
 ```
 
-Post-apply state, verified by query: **19 tables, all 19 RLS-enabled, 27
+Post-apply state, verified by query: **29 tables, all 29 RLS-enabled, 31
 policies, 3 private storage buckets, 4 seeded network providers.** The four
 original tables (`nodes`, `servers`, `pairing_codes`, `node_events`) were
 preserved — they were empty (0 rows) and every statement against them was
-`add column if not exists`.
+`add column if not exists`. Of the 29 tables, 10 belong to OG VOICE and hold
+**0 rows**: the schema is in place, and no voice data exists yet.
 
 **If you are deploying to this project, skip to Step 2.** Re-running is harmless
-(all five are idempotent) but unnecessary. If you are deploying to a *different*
+(all seven are idempotent) but unnecessary. If you are deploying to a *different*
 Supabase project, run them in order.
 
 ### Running them yourself
@@ -69,8 +72,10 @@ Apply in order in the Supabase SQL Editor, or with the CLI.
 | `003_seed.sql` | Seeds the `network_providers` catalogue (direct / playit / manual / custom). |
 | `004_storage_and_network_settings.sql` | Creates the three private storage buckets and their RLS policies, plus `node_network_settings`, `backup_schedules` and `drive_connections`. |
 | `005_role_privileges.sql` | **Do not skip this one.** Grants the minimum privileges the app needs and revokes dangerous ones. Without it the application cannot read or write anything. |
+| `006_voice.sql` | OG VOICE: ten additive tables for per-server voice config, rooms, guest identity links, one-time verification codes, device sessions, player preferences, groups, membership, connection events and service health. Stores hashes only, no audio, no SFU credentials. Six of the ten have **no RLS policy at all** and are revoked from `anon`/`authenticated`, so a browser cannot read session credentials even scoped to its own account. |
+| `007_default_privilege_hardening.sql` | **Do not skip this one either.** Closes a hole 005 could not reach: Supabase's shipped default ACL re-grants TRUNCATE/REFERENCES/TRIGGER to `anon` and `authenticated` on every table created *after* 005. Alters the default ACL and sweeps all existing public tables. |
 
-All five are idempotent — re-running is safe.
+All seven are idempotent — re-running is safe.
 
 > **Why 005 is mandatory.** An audit of the live project found that `anon`,
 > `authenticated` and `service_role` each held only `Dxt` — TRUNCATE, REFERENCES,
@@ -91,7 +96,41 @@ All five are idempotent — re-running is safe.
 > grants `authenticated` SELECT only (RLS does the owner scoping), grants `anon`
 > SELECT on the public `network_providers` catalogue alone, gives `service_role`
 > the DML the API routes need, and sets default privileges so future tables
-> inherit the correct grants.
+> inherit SELECT for `authenticated`.
+>
+> **Correction, found while applying 006.** That last part was not sufficient,
+> and this document previously overstated it. Revoking from tables does not
+> remove the privileges from Supabase's *default* ACL, which still reads
+> `{anon=Dxtm, authenticated=rDxtm}`. Every table created after 005 therefore
+> re-inherited TRUNCATE — which bypasses RLS — plus REFERENCES and TRIGGER.
+> Four voice tables were affected before migration 007 altered the default ACL
+> and swept every public table. See `docs/SECURITY.md`, defect 3.
+>
+> After running the migrations, verify it yourself rather than trusting this
+> page. Both queries must return `0` and `m`/`rm` respectively:
+>
+> ```sql
+> -- Tables still exposing an RLS-bypassing privilege to an untrusted role.
+> select count(*) from pg_class c
+>   join pg_namespace n on n.oid = c.relnamespace
+>  where n.nspname = 'public' and c.relkind = 'r'
+>    and (has_table_privilege('anon', c.oid, 'TRUNCATE')
+>      or has_table_privilege('authenticated', c.oid, 'TRUNCATE')
+>      or has_table_privilege('anon', c.oid, 'REFERENCES')
+>      or has_table_privilege('authenticated', c.oid, 'REFERENCES')
+>      or has_table_privilege('anon', c.oid, 'TRIGGER')
+>      or has_table_privilege('authenticated', c.oid, 'TRIGGER'));
+>
+> -- What a table created from now on will inherit.
+> select defaclacl from pg_default_acl
+>  where defaclrole = 'postgres'::regrole
+>    and defaclnamespace = 'public'::regnamespace
+>    and defaclobjtype = 'r';
+> ```
+>
+> The second is the one that matters for the future: if it shows `Dxt` for
+> `anon` or `authenticated`, the next migration will reopen the hole no matter
+> how careful its own `GRANT` statements are.
 
 > **Why the views need `security_invoker`.** A normal PostgreSQL view executes
 > with the privileges of its *owner*, which in Supabase is a role that bypasses

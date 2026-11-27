@@ -130,24 +130,226 @@ describe('migrations never grant dangerous privileges to untrusted roles', () =>
       const onTables = /\b(all\s+tables|public\.[a-z_]+)\b/i.test(grant.statement);
       // `grant usage on schema public to anon` is fine and touches no table.
       if (!onTables) continue;
+      // The `TABLE` keyword is optional in GRANT, and migration 007 spells it
+      // out. The intent of this guard is which relation anon may read, not the
+      // syntax used to say so, so both spellings are accepted.
       expect(grant.statement, 'anon may only SELECT the public network_providers catalogue').toMatch(
-        /select\s+on\s+public\.network_providers/i,
+        /select\s+on\s+(?:table\s+)?public\.network_providers/i,
       );
     }
   });
 
   it('sets default privileges so future tables inherit safe grants', () => {
     expect(allSql).toMatch(/alter\s+default\s+privileges[\s\S]{0,300}?to\s+authenticated/i);
-    // And the defaults must not include TRUNCATE for untrusted roles.
+
     const defaults = allSql.match(/alter\s+default\s+privileges[^;]+;/gis) ?? [];
     expect(defaults.length, 'expected default-privilege statements to exist').toBeGreaterThan(0);
-    for (const statement of defaults) {
+
+    // Only GRANT statements can widen access. This check used to test every
+    // `alter default privileges` statement for the word "truncate", which made
+    // migration 007's `revoke truncate, references, trigger` fail the suite for
+    // being the fix. Distinguishing the verbs keeps the guard honest.
+    const grants = defaults.filter((statement) => /^\s*alter\s+default\s+privileges[\s\S]*?\bgrant\b/i.test(statement));
+    expect(grants.length, 'expected default-privilege GRANTs to exist').toBeGreaterThan(0);
+    for (const statement of grants) {
       if (/\bto\s+[^;]*\b(anon|authenticated)\b/i.test(statement)) {
         expect(statement, 'default privileges must not grant TRUNCATE to untrusted roles').not.toMatch(
           /\btruncate\b/i,
         );
       }
     }
+  });
+
+  it('revokes the dangerous privileges from the default ACL, not just from existing tables', () => {
+    // THE LESSON FROM MIGRATION 007, and the reason this test exists.
+    //
+    // Supabase ships default privileges of {anon=Dxtm, authenticated=rDxtm} for
+    // tables created by `postgres` in `public`. Migration 005 revoked TRUNCATE,
+    // REFERENCES and TRIGGER from every table that existed, and this suite
+    // passed — but `voice_rooms`, `voice_server_configs`, `voice_groups` and
+    // `voice_service_health` were created afterwards and silently re-inherited
+    // all three. TRUNCATE bypasses RLS, so an anon session with a direct
+    // Postgres connection could have emptied voice configuration for every
+    // account.
+    //
+    // Revoking from tables is therefore not enough; the default ACL has to
+    // change too, or each new migration reopens the hole.
+    for (const role of ['anon', 'authenticated']) {
+      expect(
+        allSql,
+        `default privileges must revoke TRUNCATE/REFERENCES/TRIGGER from ${role}`,
+      ).toMatch(new RegExp(`alter\\s+default\\s+privileges[\\s\\S]{0,200}?revoke\\s+truncate,\\s*references,\\s*trigger\\s+on\\s+tables\\s+from\\s+${role}\\s*;`, 'i'));
+    }
+  });
+
+  it('sweeps every existing public table rather than a hardcoded list', () => {
+    // A hand-written list of tables goes stale the moment a migration adds one.
+    // 007 loops over pg_class so re-running it covers tables that did not exist
+    // when it was written.
+    expect(allSql).toMatch(/for\s+t\s+in[\s\S]{0,400}?pg_class[\s\S]{0,400}?nspname\s*=\s*'public'/i);
+    expect(allSql).toMatch(/execute\s+format\(\s*'revoke\s+all\s+on\s+table\s+public\.%I\s+from\s+anon'/i);
+  });
+
+  it('leaves anon exactly one readable table after the sweep', () => {
+    // The blanket `revoke all ... from anon` must be followed by re-granting the
+    // public provider catalogue, or the landing page loses its data. Scoped to
+    // the migration that performs the sweep: 005 also grants network_providers
+    // to anon, and matching that first would make the ordering check meaningless.
+    const sweepMigration = migrations.find((m) =>
+      /revoke\s+all\s+on\s+table\s+public\.%I\s+from\s+anon/i.test(m.sql),
+    );
+    expect(sweepMigration, 'no migration sweeps anon privileges across public tables').toBeDefined();
+
+    const sql = sweepMigration!.sql;
+    const sweepAt = sql.search(/revoke\s+all\s+on\s+table\s+public\.%I\s+from\s+anon/i);
+    const regrantAt = sql.search(/grant\s+select\s+on\s+table\s+public\.network_providers\s+to\s+anon/i);
+    expect(regrantAt, 'network_providers must be re-granted after the anon sweep').toBeGreaterThan(sweepAt);
+    expect(regrantAt).toBeGreaterThanOrEqual(0);
+  });
+});
+
+describe('voice tables keep credentials out of browser reach', () => {
+  const voiceMigration = migrations.find((m) => m.file.startsWith('006'))?.sql ?? '';
+
+  // These six hold session tokens, verification codes, guest identity or the
+  // audit trail. They are reachable only through API routes using the
+  // service-role key; the browser must never read them, even scoped by RLS.
+  const CREDENTIAL_TABLES = [
+    'voice_player_links',
+    'voice_verification_codes',
+    'voice_device_sessions',
+    'voice_player_preferences',
+    'voice_group_members',
+    'voice_connection_events',
+  ];
+
+  // Owner-facing tables, where RLS scopes rows to the owner instead.
+  const OWNER_TABLES = ['voice_server_configs', 'voice_rooms', 'voice_groups', 'voice_service_health'];
+
+  it('creates all ten voice tables', () => {
+    for (const table of [...CREDENTIAL_TABLES, ...OWNER_TABLES]) {
+      expect(voiceMigration, `006 must create ${table}`).toMatch(
+        new RegExp(`create\\s+table\\s+if\\s+not\\s+exists\\s+public\\.${table}\\b`, 'i'),
+      );
+    }
+  });
+
+  it.each(CREDENTIAL_TABLES)('enables RLS on %s and gives it no browser policy', (table) => {
+    // A policy here would be a second way in: even an owner-scoped policy on
+    // voice_device_sessions would expose session token hashes to a browser.
+    expect(voiceMigration, `${table} must have RLS enabled`).toMatch(
+      new RegExp(`alter\\s+table\\s+public\\.${table}\\s+enable\\s+row\\s+level\\s+security`, 'i'),
+    );
+    expect(voiceMigration, `${table} must not have a create policy`).not.toMatch(
+      new RegExp(`create\\s+policy[^;]*\\bon\\s+public\\.${table}\\b`, 'i'),
+    );
+    expect(voiceMigration, `${table} must be revoked from anon and authenticated`).toMatch(
+      new RegExp(`revoke\\s+all\\s+on\\s+table\\s+public\\.${table}\\s+from\\s+anon,\\s*authenticated`, 'i'),
+    );
+  });
+
+  it.each(OWNER_TABLES)('scopes %s to its owner with a policy', (table) => {
+    expect(voiceMigration).toMatch(
+      new RegExp(`create\\s+policy[^;]*\\bon\\s+public\\.${table}[\\s\\S]{0,200}?auth\\.uid\\(\\)\\s*=\\s*owner_id`, 'i'),
+    );
+  });
+
+  it('stores only hashes for codes and session tokens', () => {
+    expect(voiceMigration).toMatch(/code_hash\s+text\s+not\s+null/i);
+    expect(voiceMigration).toMatch(/session_token_hash\s+text\s+not\s+null/i);
+    // No plaintext counterpart column may be added later by accident.
+    expect(voiceMigration).not.toMatch(/^\s*(code|session_token)\s+text/im);
+  });
+
+  it('gives guest links no path into an owner account', () => {
+    // voice_player_links must not reference auth.users: Minecraft friends have
+    // no OG HOST account and must never reach account or server-management data.
+    const links = voiceMigration.match(
+      /create\s+table\s+if\s+not\s+exists\s+public\.voice_player_links\s*\(([\s\S]*?)\n\);/i,
+    );
+    expect(links, 'voice_player_links definition not found').not.toBeNull();
+    expect(links![1]).not.toMatch(/auth\.users/i);
+    expect(links![1]).not.toMatch(/owner_id/i);
+  });
+
+  it('defaults recording and audio storage to off', () => {
+    expect(voiceMigration).toMatch(/recording_enabled\s+boolean\s+not\s+null\s+default\s+false/i);
+    expect(voiceMigration).toMatch(/audio_storage_enabled\s+boolean\s+not\s+null\s+default\s+false/i);
+    // And nothing in the voice schema stores audio itself.
+    expect(voiceMigration).not.toMatch(/\baudio_data\b|\brecording_url\b|\bbytea\b/i);
+  });
+
+  it('constrains the mic permission state to the ten documented states', () => {
+    const states = ['not_requested', 'permission_required', 'permission_granted', 'permission_denied',
+      'permission_permanently_denied', 'permission_revoked', 'mic_active', 'mic_muted',
+      'device_unavailable', 'disconnected'];
+    for (const state of states) {
+      expect(voiceMigration, `mic_permission_state check must allow ${state}`).toContain(`'${state}'`);
+    }
+    expect(voiceMigration).toMatch(/mic_permission_state\s+text\s+not\s+null\s+default\s+'not_requested'/i);
+  });
+
+  it('keeps the microphone off until the player activates it', () => {
+    // 'not_requested' must be the default, and a session must not start out
+    // connected or transmitting.
+    expect(voiceMigration).toMatch(/connected\s+boolean\s+not\s+null\s+default\s+false/i);
+    expect(voiceMigration).toMatch(/transmitting\s+boolean\s+not\s+null\s+default\s+false/i);
+  });
+
+  it('stores no plaintext credential in any voice column', () => {
+    // The LiveKit API key and secret belong in environment variables only.
+    //
+    // This checks column definitions rather than the whole file on purpose: the
+    // SQL prose deliberately mentions secrets in order to say none are stored,
+    // and `comment on table '...'` strings are not stripped the way `--` line
+    // comments are, so a naive whole-file scan fails on its own explanation.
+    const bodies = [
+      ...voiceMigration.matchAll(
+        /create\s+table\s+if\s+not\s+exists\s+public\.(voice_\w+)\s*\(([\s\S]*?)\n\);/gi,
+      ),
+    ];
+    expect(bodies.length, 'expected the ten voice CREATE TABLE statements').toBe(10);
+
+    const TYPES = 'text|uuid|bytea|jsonb|numeric|integer|bigint|boolean|timestamptz';
+    for (const [, table, body] of bodies) {
+      const parsed = [...body.matchAll(new RegExp(`^\\s+(\\w+)\\s+(${TYPES})`, 'gim'))].map((m) => ({
+        name: m[1],
+        type: m[2].toLowerCase(),
+      }));
+      expect(parsed.length, `${table}: no columns parsed`).toBeGreaterThan(0);
+      const columns = parsed.map((c) => c.name);
+
+      // Nothing may be able to hold audio bytes at all.
+      expect(parsed.some((c) => c.type === 'bytea'), `${table} must not have a bytea column`).toBe(false);
+
+      // No SFU credential at all, hashed or otherwise.
+      expect(
+        columns.some((c) => /api_key|api_secret|sfu_secret|private_key/i.test(c)),
+        `${table} must not store voice server credentials`,
+      ).toBe(false);
+
+      // Anything that does look like a credential must be stored hashed.
+      for (const column of columns.filter((c) => /(secret|token|password|code)/i.test(c))) {
+        expect(column, `${table}.${column} looks like a credential and must be stored hashed`).toMatch(/_hash$/);
+      }
+
+      // Audio-related names may only be boolean settings. `recording_enabled`
+      // and `audio_storage_enabled` are switches that default to false; a text
+      // or jsonb column with such a name would mean the schema can hold audio.
+      for (const { name, type } of parsed.filter((c) => /audio|recording|pcm|opus/i.test(c.name))) {
+        expect(type, `${table}.${name} must be a boolean setting, never audio storage`).toBe('boolean');
+      }
+    }
+
+    expect(voiceMigration).toMatch(/sfu_url\s+text\s+not\s+null/i);
+    expect(voiceMigration).toMatch(/code_hash\s+text\s+not\s+null/i);
+    expect(voiceMigration).toMatch(/session_token_hash\s+text\s+not\s+null/i);
+  });
+
+  it('records relay mode as unknown until measured', () => {
+    // §10: never assume direct inbound connectivity on mobile carriers.
+    expect(voiceMigration).toMatch(/relay_mode\s+text\s+not\s+null\s+default\s+'unknown'/i);
+    expect(voiceMigration).toMatch(/turn_servers_configured\s+boolean\s+not\s+null\s+default\s+false/i);
   });
 });
 

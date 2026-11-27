@@ -286,7 +286,7 @@ app currently runs a `next` version with published critical DoS advisories.**
 ### The path forward
 
 1. `.github/dependabot.yml` opens weekly PRs for npm, NuGet and GitHub Actions.
-   CI runs the full gate (lint, typecheck, 253 unit tests, production build, SQL
+   CI runs the full gate (lint, typecheck, 371 unit tests, production build, SQL
    migration validation, and the Windows agent xUnit suite) on each one.
 2. Do **not** merge a major bump on a green build alone. For `next`, read the
    15 and 16 codemods and run `npx @next/codemod upgrade latest`.
@@ -342,10 +342,15 @@ on `windows-latest`; that pipeline has not yet been observed passing.
 | Cross-account write attempts | Same probe: INSERT/UPDATE/DELETE refused with `permission denied` | **YES** |
 | TRUNCATE (an RLS-bypassing operation) refused to untrusted roles | Same probe, check 11 | **YES** |
 | Views enforce RLS rather than bypassing it | Same probe: `node_status_view` → 1 row for B, `server_overview_view` → 0 | **YES** |
-| Role privileges are minimal (`authenticated` read-only, `anon` catalogue only) | `has_table_privilege` over 11 tables | **YES** |
-| Schema state: 19 tables, all RLS-enabled, 27 policies | `pg_class` / `pg_policies` query | **YES** |
-| Additive, idempotent migrations preserve the original four tables | Applied 001–005 to the live project; all four preserved and were empty | **YES** |
-| Web/shared validation, allowlist mirror, CGNAT mirror, version discovery | vitest — 253 tests | **YES — all pass** |
+| Role privileges are minimal (`authenticated` read-only, `anon` catalogue only) | `has_table_privilege` across all 29 public tables | **YES** |
+| No table grants TRUNCATE/REFERENCES/TRIGGER to `anon` or `authenticated` | `has_table_privilege` sweep after migration 007 — **0 of 29 exposed** | **YES** |
+| Default ACL cannot re-grant them to tables created later | `pg_default_acl` → `anon=m, authenticated=rm` | **YES** |
+| Schema state: 29 tables, all RLS-enabled, 31 policies | `pg_class` / `pg_policies` query | **YES** |
+| Voice schema matches the repository migration exactly | 10 tables, 43 constraints, 10 table comments, 8 column comments, 4 triggers, 4 policies, 22 indexes | **YES** |
+| Voice credential tables unreachable from a browser session | 6 tables: `anon`/`authenticated` hold no privilege at all, and have no RLS policy | **YES** |
+| Additive, idempotent migrations preserve the original four tables | Applied 001–007 to the live project; all four preserved and still empty | **YES** |
+| Voice proximity, dimension separation, permission and quality logic | vitest — 97 tests | **YES — all pass** |
+| Web/shared validation, allowlist mirror, CGNAT mirror, version discovery | vitest — 371 tests | **YES — all pass** |
 | Lint, typecheck, production build | `next lint` (0 warnings), `tsc --noEmit`, `next build` | **YES** |
 | Command allowlist rejects shell and accepts Bedrock commands | xUnit `CommandAllowlistTests` | **NO — written, never run** |
 | Path confinement and traversal rejection | xUnit `PathConfinementTests` | **NO — written, never run** |
@@ -377,6 +382,59 @@ inspection alone had missed:
    now refused.
 
 Both are documented in `docs/FEATURE-INVENTORY.md` with the evidence.
+
+### What applying the voice schema revealed
+
+Migration 005's fix was real but **narrower than it looked**, and the gap was
+invisible to both code review and the repository's own static migration tests.
+
+3. **Revoking from tables does not change the default ACL.** Supabase ships
+   default privileges of `{anon=Dxtm, authenticated=rDxtm}` for tables created by
+   `postgres` in `public`. Migration 005 revoked TRUNCATE, REFERENCES and TRIGGER
+   from every table *that existed at the time*, so the probe correctly reported
+   them refused — but the four owner-facing voice tables created afterwards
+   (`voice_server_configs`, `voice_rooms`, `voice_groups`, `voice_service_health`)
+   silently re-inherited all three. `anon=Dxtm` means an anonymous role with a
+   direct Postgres connection could TRUNCATE them, and TRUNCATE bypasses RLS, so
+   that would have cleared voice configuration for every account.
+
+   The six credential-bearing voice tables were unaffected only because
+   migration 006 revoked from them explicitly.
+
+   Same scoping caveat as defect 2: PostgREST exposes GET/POST/PATCH/DELETE and
+   not TRUNCATE, so this was not reachable with the anon key over HTTP. It
+   required a direct database connection as `anon` or `authenticated`.
+
+   Fixed in migration 007, which does both halves: it alters the default ACL so
+   future tables inherit only `anon=m, authenticated=rm`, and it sweeps every
+   existing public table in a loop rather than from a list that would go stale.
+   Re-running the same audit query afterwards reports **0 of 29 tables exposed**,
+   with `authenticated` retaining SELECT on all 29 (RLS does the scoping) and
+   `anon` retaining SELECT on exactly one (`network_providers`).
+
+   The lesson is recorded as executable tests in
+   `packages/shared/tests/migration-safety.test.ts`: one asserts the default ACL
+   is revoked and not merely the tables, one asserts the sweep is generic, and
+   one asserts the voice credential tables have RLS enabled with no browser
+   policy. A static test still cannot see an inherited ACL — that requires
+   querying `pg_default_acl` on the live project, which is why the audit query is
+   documented here rather than only in code.
+
+### Voice features that remain unverified
+
+Everything above concerns the schema and the pure routing logic. The parts of
+OG VOICE that need hardware, a network or a real Minecraft client have **not**
+been executed, and are labelled as such wherever they appear:
+
+| Not yet verified | Why |
+| --- | --- |
+| Real microphone capture and two-way audio | Needs a physical device and a running voice server |
+| Measured end-to-end voice latency | Needs a real SFU and two clients |
+| Android 12–16 permission, foreground-service and Bluetooth behaviour | No Android SDK or device in this environment |
+| Windows companion build and hotkey capture | No Windows host; `dotnet` is not installed here |
+| Bedrock add-on position sync against a live BDS | No Bedrock Dedicated Server available |
+| NAT traversal on Jio/Airtel/Vi mobile networks | Needs those carriers; `relay_mode` stays `unknown` until measured |
+| Any of the 30 real-multiplayer steps in §20 | Needs 1 Windows BDS + Android and Windows players |
 
 The remaining untested rows are the ones that matter most before opening
 registration to strangers, and they all need the same two things: a Windows

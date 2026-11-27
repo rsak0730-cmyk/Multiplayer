@@ -148,19 +148,31 @@ TRUNCATE hole is closed.
 
 ### Schema state — IMPLEMENTED AND TESTED
 
-19 tables, **all 19 with RLS enabled**, 27 policies, 3 private storage buckets,
-4 seeded network providers, 5 migrations in history.
+29 tables, **all 29 with RLS enabled**, 31 policies, 3 private storage buckets,
+4 seeded network providers, 7 migrations in history.
+
+Ten of those tables are OG VOICE (migration 006) and hold 0 rows — the schema is
+live, no voice data exists yet. Migration 007 followed immediately, because
+applying 006 exposed a defect this audit had missed: see
+[What applying the voice schema revealed](SECURITY.md#what-applying-the-voice-schema-revealed).
+In short, migration 005 revoked TRUNCATE/REFERENCES/TRIGGER from the tables that
+existed, but Supabase's *default* ACL still grants them to any table created
+afterwards, so four voice tables re-inherited an RLS-bypassing TRUNCATE. 007
+alters the default ACL and sweeps every public table; the re-audit reports 0 of
+29 exposed. This audit's check 11 was correct about the tables it tested and
+wrong about the future — a static test cannot see an inherited ACL.
 
 ### Web application — IMPLEMENTED AND TESTED
 
 `npm run lint` (0 warnings), `npm run typecheck` (exit 0), `npm run test`
-(**253 tests passing**: 172 shared + 81 web), `next build` (exit 0; 26 API
+(**371 tests passing**: 290 shared + 81 web), `next build` (exit 0; 26 API
 routes, 25 pages). Also verified from a clean extraction of the distributed ZIP:
 `npm ci` then all four gates again, all green.
 
-Note the 253 total was reached *after* this audit: 237 passed when the web app
-was last built, and 16 more were added as `migration-safety.test.ts` to stop the
-privilege and view defects found here from regressing.
+The total grew in three steps, each tied to a defect rather than to decoration:
+237 when the web app was last built, +16 as `migration-safety.test.ts` to stop
+the privilege and view defects found here from regressing, +97 as
+`voice.test.ts` plus +21 further migration guards after 006/007.
 
 ### Windows agent — IMPLEMENTED, NOT TESTED
 
@@ -499,8 +511,9 @@ approximated by manifest checks.
 
 | Item | Status | Notes |
 | --- | --- | --- |
-| Additive, idempotent migrations | IMPLEMENTED AND TESTED | 001–005 applied to the live project; original four tables preserved; CI guard fails any migration that drops them. |
-| RLS on every table | IMPLEMENTED AND TESTED | 19/19 enabled; verified by query. |
+| Additive, idempotent migrations | IMPLEMENTED AND TESTED | 001–007 applied to the live project; original four tables preserved; CI guard fails any migration that drops them. |
+| RLS on every table | IMPLEMENTED AND TESTED | 29/29 enabled; verified by query. |
+| No RLS-bypassing privilege for untrusted roles | IMPLEMENTED AND TESTED | 0 of 29 tables expose TRUNCATE/REFERENCES/TRIGGER to `anon`/`authenticated`; default ACL altered by 007 so new tables cannot re-inherit them. |
 | Owner isolation | IMPLEMENTED AND TESTED | 16/16 probe checks. |
 | Foreign keys and indexes | IMPLEMENTED AND TESTED | FKs verified present; 6 performance indexes created. |
 | Check constraints on enums and bounds | IMPLEMENTED AND TESTED | Status/provider/channel/gamemode/difficulty constraints, port 1024–65535, max_players 1–100, interval 1–168 h, keep 1–50. |
