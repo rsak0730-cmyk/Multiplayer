@@ -57,69 +57,105 @@ jobs:
           path: ${{ env.AGENT_DIR }}/TestResults/**/*.trx
           if-no-files-found: warn
 
-      # The console log and the uploaded artifact are both served from hosts
-      # outside api.github.com, so a failing test run is unreadable to anything
-      # that cannot open the Actions UI. The job summary is served by the
-      # check-run API, which makes it the one place failures stay retrievable
-      # programmatically — so parse the .trx and put every failure in it.
-      - name: Publish test failures to the job summary
+      # The console log and the uploaded .trx are both served from hosts outside
+      # api.github.com (results-receiver.actions.githubusercontent.com and
+      # productionresultssa5.blob.core.windows.net), so a failing test run is
+      # unreadable to anything that cannot open the Actions UI. $GITHUB_STEP_SUMMARY
+      # is not exposed by the REST API either — output.summary comes back empty for
+      # a workflow job — but check-run annotations are, so emit one per failing test
+      # as well as the human-readable summary.
+      #
+      # Reporting must never decide the job outcome, so everything is wrapped: a bug
+      # here can only cost visibility, never turn a green build red.
+      - name: Report test failures
         if: always()
         shell: pwsh
         working-directory: ${{ env.AGENT_DIR }}
         run: |
-          function To-Int([string]$value) {
-            if ([string]::IsNullOrEmpty($value)) { 0 } else { [int]$value }
+          try {
+            function To-Int([string]$value) {
+              if ([string]::IsNullOrEmpty($value)) { 0 } else { [int]$value }
+            }
+            # Workflow-command escaping. Properties additionally escape ':' and ','.
+            function Escape-Data([string]$value) {
+              $value -replace '%', '%25' -replace "`r", '%0D' -replace "`n", '%0A'
+            }
+            # Parenthesised on purpose: `Escape-Data $value -replace ...` leaves the
+            # operator in argument position, where PowerShell may try to bind
+            # -replace as a parameter name instead of applying it to the result.
+            function Escape-Property([string]$value) {
+              (Escape-Data $value) -replace ':', '%3A' -replace ',', '%2C'
+            }
+
+            $trxFiles = Get-ChildItem -Path TestResults -Filter '*.trx' -Recurse -ErrorAction SilentlyContinue
+
+            if (-not $trxFiles) {
+              Write-Host '::warning::No .trx was produced: the build failed before the test step ran.'
+              'No .trx was produced: the build failed before the test step ran.' |
+                Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+              exit 0
+            }
+
+            $lines = New-Object System.Collections.Generic.List[string]
+            $totalAll = 0
+            $passedAll = 0
+            $failedAll = 0
+            $notExecutedAll = 0
+
+            foreach ($file in $trxFiles) {
+              [xml]$doc = Get-Content -Path $file.FullName -Raw
+              $counters = $doc.TestRun.ResultSummary.Counters
+              $fileTotal = To-Int $counters.total
+              $filePassed = To-Int $counters.passed
+              $fileFailed = To-Int $counters.failed
+              $fileSkipped = To-Int $counters.notExecuted
+              $totalAll += $fileTotal
+              $passedAll += $filePassed
+              $failedAll += $fileFailed
+              $notExecutedAll += $fileSkipped
+
+              $lines.Add("### $($file.Name)")
+              $lines.Add("outcome: **$($doc.TestRun.ResultSummary.outcome)** · total $fileTotal · passed $filePassed · failed $fileFailed · not executed $fileSkipped")
+              $lines.Add('')
+
+              $notPassed = @($doc.TestRun.Results.UnitTestResult | Where-Object { $_.outcome -ne 'Passed' })
+              foreach ($test in $notPassed) {
+                $message = [string]$test.Output.ErrorInfo.Message
+                $stack = [string]$test.Output.ErrorInfo.StackTrace
+                if (-not $message -and -not $stack) { $message = "(no message recorded; outcome $($test.outcome))" }
+
+                $body = $message.Trim()
+                if ($stack) {
+                  $trimmedStack = $stack.Trim()
+                  if ($trimmedStack.Length -gt 1500) { $trimmedStack = $trimmedStack.Substring(0, 1500) + ' ...[truncated]' }
+                  $body = ($body + "`n`n" + $trimmedStack).Trim()
+                }
+                # Stay well inside the 64KB per-annotation limit.
+                if ($body.Length -gt 4000) { $body = $body.Substring(0, 4000) + ' ...[truncated]' }
+
+                $title = [string]$test.testName
+                if ($title.Length -gt 300) { $title = $title.Substring(0, 300) + ' ...' }
+                Write-Host "::error title=$(Escape-Property $title)::$(Escape-Data $body)"
+
+                $lines.Add("#### $title — $($test.outcome)")
+                $lines.Add('```')
+                $lines.Add($body)
+                $lines.Add('```')
+                $lines.Add('')
+              }
+            }
+
+            $header = "Agent tests: $totalAll total · $passedAll passed · $failedAll failed · $notExecutedAll not executed"
+            Write-Host "::notice title=$(Escape-Property 'Agent test totals')::$(Escape-Data $header)"
+            $lines.Insert(0, '')
+            $lines.Insert(0, "**$header**")
+            $lines | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
           }
-
-          $trxFiles = Get-ChildItem -Path TestResults -Filter '*.trx' -Recurse -ErrorAction SilentlyContinue
-
-          if (-not $trxFiles) {
-            'No .trx was produced: the build failed before the test step ran.' |
-              Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          catch {
+            # Never fail the build because the reporter broke.
+            Write-Host "::warning::Test reporter failed: $($_.Exception.Message)"
             exit 0
           }
-
-          $lines = New-Object System.Collections.Generic.List[string]
-          $totalAll = 0
-          $passedAll = 0
-          $failedAll = 0
-
-          foreach ($file in $trxFiles) {
-            [xml]$doc = Get-Content -Path $file.FullName -Raw
-            $counters = $doc.TestRun.ResultSummary.Counters
-            $totalAll += To-Int $counters.total
-            $passedAll += To-Int $counters.passed
-            $failedAll += To-Int $counters.failed
-
-            $lines.Add("### $($file.Name)")
-            $lines.Add("outcome: **$($doc.TestRun.ResultSummary.outcome)** · total $(To-Int $counters.total) · passed $(To-Int $counters.passed) · failed $(To-Int $counters.failed)")
-            $lines.Add('')
-
-            $notPassed = @($doc.TestRun.Results.UnitTestResult | Where-Object { $_.outcome -ne 'Passed' })
-            foreach ($test in $notPassed) {
-              $lines.Add("#### $($test.testName) — $($test.outcome)")
-              $message = $test.Output.ErrorInfo.Message
-              $stack = $test.Output.ErrorInfo.StackTrace
-              if ($message) {
-                $lines.Add('```')
-                $lines.Add(($message -replace "`r`n", "`n").Trim())
-                $lines.Add('```')
-              }
-              if ($stack) {
-                $trimmed = ($stack -replace "`r`n", "`n").Trim()
-                if ($trimmed.Length -gt 1500) { $trimmed = $trimmed.Substring(0, 1500) + ' ...[truncated]' }
-                $lines.Add('```')
-                $lines.Add($trimmed)
-                $lines.Add('```')
-              }
-              $lines.Add('')
-            }
-          }
-
-          $lines.Insert(0, '')
-          $lines.Insert(0, "**Agent tests: $totalAll total · $passedAll passed · $failedAll failed**")
-          $lines | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
-
   publish:
     name: Publish release artifacts
     needs: test
